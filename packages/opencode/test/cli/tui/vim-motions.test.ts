@@ -6,7 +6,7 @@ import { createVimState } from "../../../src/cli/cmd/tui/component/vim/vim-state
 import type { VimScroll } from "../../../src/cli/cmd/tui/component/vim/vim-scroll"
 import { vimScroll } from "../../../src/cli/cmd/tui/component/vim/vim-scroll"
 import type { VimJump } from "../../../src/cli/cmd/tui/component/vim/vim-motion-jump"
-import { copyWordNext, copyWordPrev, deleteSelection } from "../../../src/cli/cmd/tui/component/vim/vim-motions"
+import { copyWordNext, copyWordPrev, deleteSelection, deleteWordBackword } from "../../../src/cli/cmd/tui/component/vim/vim-motions"
 
 function rowColToOffset(text: string, row: number, col: number) {
   let index = 0
@@ -1183,6 +1183,81 @@ describe("vim motion handler", () => {
     ctx.handler.handleKey(createEvent("w").event)
     expect(ctx.textarea.plainText).toBe("")
     expect(ctx.textarea.cursorOffset).toBe(0)
+  })
+
+  test("db deletes to current word start", () => {
+    const ctx = createHandler("hello world test")
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("b").event)
+    expect(ctx.textarea.plainText).toBe("hello rld test")
+    expect(ctx.textarea.cursorOffset).toBe(6)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("db at start of text is no-op", () => {
+    const ctx = createHandler("hello world")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("b").event)
+    expect(ctx.textarea.plainText).toBe("hello world")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+  })
+
+  test("cb deletes to current word start and enters insert", () => {
+    const ctx = createHandler("hello world test")
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("c").event)
+    ctx.handler.handleKey(createEvent("b").event)
+    expect(ctx.textarea.plainText).toBe("hello rld test")
+    expect(ctx.textarea.cursorOffset).toBe(6)
+    expect(ctx.state.mode()).toBe("insert")
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("cb at start of text is no-op", () => {
+    const ctx = createHandler("hello world")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("c").event)
+    ctx.handler.handleKey(createEvent("b").event)
+    expect(ctx.textarea.plainText).toBe("hello world")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+  })
+
+  test("db with register captures deleted text", () => {
+    let reg = null as { text: string; linewise: boolean } | null
+    const ctx = createHandler("hello world test", {
+      register: {
+        set(next) {
+          reg = next
+        },
+      },
+    })
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("b").event)
+    expect(reg).toEqual({ text: "wo", linewise: false })
+  })
+
+  test("cb with register captures deleted text", () => {
+    let reg = null as { text: string; linewise: boolean } | null
+    const ctx = createHandler("hello world test", {
+      register: {
+        set(next) {
+          reg = next
+        },
+      },
+    })
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("c").event)
+    ctx.handler.handleKey(createEvent("b").event)
+    expect(reg).toEqual({ text: "wo", linewise: false })
   })
 
   test("J joins current line with next", () => {
