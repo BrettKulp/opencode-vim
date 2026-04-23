@@ -1218,7 +1218,7 @@ describe("vim motion handler", () => {
     expect(ctx.state.pending()).toBe("")
   })
 
-  test("cb at start of text is no-op", () => {
+  test("cb at start of text does not delete text", () => {
     const ctx = createHandler("hello world")
     ctx.textarea.cursorOffset = 0
 
