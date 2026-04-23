@@ -1226,6 +1226,7 @@ describe("vim motion handler", () => {
     ctx.handler.handleKey(createEvent("b").event)
     expect(ctx.textarea.plainText).toBe("hello world")
     expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.pending()).toBe("")
   })
 
   test("db with register captures deleted text", () => {
