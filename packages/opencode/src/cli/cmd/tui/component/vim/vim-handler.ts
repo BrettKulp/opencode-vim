@@ -3,6 +3,7 @@ import type { createVimState, VimSnapshot } from "./vim-state"
 import type { TextareaRenderable } from "@opentui/core"
 import { vimScroll, type VimScroll } from "./vim-scroll"
 import { vimJump, type VimJump } from "./vim-motion-jump"
+import { vimWindowNavigation, type VimWindowNavigation } from "./vim-motion-window-navigation"
 import {
   appendAfterCursor,
   appendLineEnd,
@@ -66,10 +67,13 @@ export function createVimHandler(input: {
   submit: () => void
   scroll: (action: VimScroll) => void
   jump: (action: VimJump) => void
+  navigate: (action: VimWindowNavigation) => void
   copy?: (action: VimCopyMove) => void
   copyVisual?: (mode: "char" | "line") => void
   copyExitVisual?: () => void
+  copyExit?: (scrollToBottom?: boolean) => void
   copyYank?: () => void
+  copyYankLine?: () => void
   copyCopy?: () => void
   copyIsVisual?: () => boolean
   copyJump?: (action: VimJump) => void
@@ -177,6 +181,16 @@ export function createVimHandler(input: {
       if (jump.action) {
         input.state.clearPending()
         input.jump(jump.action)
+      }
+      event.preventDefault()
+      return true
+    }
+
+    const navigation = vimWindowNavigation(event, input.state)
+    if (navigation.handled) {
+      if (navigation.action) {
+        input.state.clearPending()
+        input.navigate(navigation.action)
       }
       event.preventDefault()
       return true
@@ -705,6 +719,12 @@ export function createVimHandler(input: {
       return true
     }
 
+    if (key === "w" && hasModifier(event)) {
+      input.state.setPending("w")
+      event.preventDefault()
+      return true
+    }
+
     if (key === "backspace" || key === "delete") {
       event.preventDefault()
       return true
@@ -736,6 +756,36 @@ export function createVimHandler(input: {
         return true
       }
       input.state.setMode("normal")
+      event.preventDefault()
+      return true
+    }
+
+    if (key === "i") {
+      if (input.copyIsVisual?.()) input.copyExitVisual?.()
+      input.state.setSkipExitOnModeChange(true)
+      input.state.setExitScrollToBottom(false)
+      input.state.setMode("insert")
+      input.copyExit?.(false)
+      event.preventDefault()
+      return true
+    }
+
+    if (input.state.pending() === "w" && key === "j") {
+      if (input.copyIsVisual?.()) {
+        input.copyExitVisual?.()
+        event.preventDefault()
+        return true
+      }
+      input.state.setSkipExitOnModeChange(true)
+      input.state.setExitScrollToBottom(false)
+      input.state.setMode("normal")
+      input.copyExit?.(false)
+      event.preventDefault()
+      return true
+    }
+
+    if (key === "w" && hasModifier(event)) {
+      input.state.setPending("w")
       event.preventDefault()
       return true
     }
@@ -786,9 +836,23 @@ export function createVimHandler(input: {
       return true
     }
 
+    if (key === "y" && input.state.pending() === "y") {
+      // yy — yank current line with flash highlight
+      input.state.clearPending()
+      input.copyYankLine?.()
+      event.preventDefault()
+      return true
+    }
+
     if (key === "y") {
-      input.copyYank?.()
-      input.state.setMode("normal")
+      if (!input.copyIsVisual?.()) {
+        // first y — set pending for yy
+        input.state.setPending("y")
+      } else {
+        // y in visual — yank selection, flash highlight then clear
+        input.copyYank?.()
+        setTimeout(() => input.copyExitVisual?.(), 150)
+      }
       event.preventDefault()
       return true
     }

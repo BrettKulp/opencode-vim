@@ -280,6 +280,63 @@ export function createCopyMode(input: {
     setState((s) => ({ ...s, stick }))
   }
 
+  // --- scroll compensation ---
+  // When entering/exiting copy mode, diffs switch between split/unified view,
+  // changing content heights. We snapshot a reference child before the toggle,
+  // then poll until layout has actually changed and compensate the scroll delta.
+
+  let compensateTimer: ReturnType<typeof setTimeout> | undefined
+
+  function snapshotScroll() {
+    const scr = input.scroll()
+    if (!scr) return undefined
+    const scrollY = scr.scrollTop
+    const atBottom = scrollY + scr.height >= scr.scrollHeight - 1
+    // Children .y values are viewport-relative, so use scr.y (≈0) to find visible ones
+    const children = scr.getChildren().toSorted((a, b) => a.y - b.y)
+    const ref = children.find(c => c.id && c.y + c.height > scr.y)
+    if (!ref?.id) return undefined
+    return { id: ref.id, childY: ref.y, scrollY, atBottom }
+  }
+
+  function compensateScroll(snap: ReturnType<typeof snapshotScroll>, afterSettle?: () => void) {
+    if (compensateTimer) clearTimeout(compensateTimer)
+    if (!snap) { afterSettle?.(); return }
+
+    const tryCompensate = () => {
+      const scr = input.scroll()
+      if (!scr || scr.isDestroyed) return false
+      const child = scr.getChildren().find(c => c.id === snap.id)
+      if (!child) return false
+      const oldAbsolute = snap.scrollY + snap.childY
+      const newAbsolute = scr.scrollTop + child.y
+      const contentDelta = newAbsolute - oldAbsolute
+      if (contentDelta === 0) return false
+      const targetY = snap.atBottom ? scr.scrollHeight : snap.scrollY + contentDelta
+      scr.scrollTo(targetY)
+      return true
+    }
+
+    // Try synchronously first — Solid renders are synchronous so layout
+    // may already reflect the new state
+    if (tryCompensate()) {
+      afterSettle?.()
+      return
+    }
+
+    // Fall back to polling if layout hasn't updated yet
+    let attempts = 0
+    const poll = () => {
+      attempts++
+      if (tryCompensate() || attempts >= 10) {
+        afterSettle?.()
+        return
+      }
+      compensateTimer = setTimeout(poll, 16)
+    }
+    compensateTimer = setTimeout(poll, 0)
+  }
+
   // --- navigation ---
 
   function sync(next: number) {
@@ -305,26 +362,61 @@ export function createCopyMode(input: {
     }
   }
 
+  function pickVisibleTarget(list: CopyRow[], scr: { y: number; height: number }) {
+    const top = scr.y
+    const bottom = scr.y + scr.height - 1
+    const visible = list.filter(x => x.y >= top && x.y <= bottom)
+    if (visible.length) {
+      const midY = top + (bottom - top) / 2
+      const best = visible.reduce((a, b) =>
+        Math.abs(a.y - midY) < Math.abs(b.y - midY) ? a : b
+      )
+      return list.indexOf(best)
+    }
+    const idx = list.findLastIndex(x => x.role === "assistant")
+    return idx >= 0 ? idx : list.length - 1
+  }
+
   function enter() {
     const init = () => {
+      const scr = input.scroll()
       const list = rows()
       if (!list.length) return false
-      const idx = list.findLastIndex((x) => x.role === "assistant")
-      const target = idx >= 0 ? idx : list.length - 1
+
+      // Pick initial target from currently visible rows BEFORE activating
+      const target = pickVisibleTarget(list, scr)
       const row = list[target]
-      setState((s) => ({ ...s, col: copyMin(row), stick: "first" as const }))
-      sync(target)
+
+      const snap = snapshotScroll()
+      setState((s) => ({ ...s, active: true, idx: target, col: copyMin(row), stick: "first" as const }))
+      compensateScroll(snap, () => {
+        // After compensation, re-pick in case layout shifted
+        const postScr = input.scroll()
+        if (!postScr || postScr.isDestroyed) return
+        const postList = rows()
+        if (!postList.length) return
+        const newTarget = pickVisibleTarget(postList, postScr)
+        const newRow = postList[newTarget]
+        if (newRow) {
+          setState((s) => ({ ...s, idx: newTarget, col: copyMin(newRow), stick: "first" as const }))
+        }
+      })
       return true
     }
     if (init()) return
-    setTimeout(() => {
-      init()
-    }, 0)
+    setTimeout(() => init(), 0)
   }
 
-  function exit() {
-    setState({ ...empty })
-    input.toBottom()
+  function exit(scrollToBottom?: boolean) {
+    if (scrollToBottom === undefined || scrollToBottom) {
+      setState({ ...empty })
+      input.toBottom()
+      return
+    }
+    // Exit without scrolling — keep current scroll position
+    const snap = snapshotScroll()
+    setState((s) => ({ ...s, active: false, visual: undefined, anchor: undefined }))
+    compensateScroll(snap)
   }
 
   function move(action: "up" | "down" | "left" | "right") {
@@ -396,6 +488,19 @@ export function createCopyMode(input: {
 
   function exitVisual() {
     setState((s) => ({ ...s, visual: undefined, anchor: undefined }))
+  }
+
+  let yankFlashTimer: ReturnType<typeof setTimeout> | undefined
+  function yankLine() {
+    visual("line")
+    const reg = yank()
+    // Keep the highlight visible briefly, then clear
+    if (yankFlashTimer) clearTimeout(yankFlashTimer)
+    yankFlashTimer = setTimeout(() => {
+      yankFlashTimer = undefined
+      exitVisual()
+    }, 150)
+    return reg
   }
 
   function selectionText(): string {
@@ -529,17 +634,20 @@ export function createCopyMode(input: {
     return id
   })
 
-  createEffect(() => {
+  createEffect((prev: boolean | undefined) => {
     const s = state()
     const list = rows()
-    if (!s.active) return
+    if (!s.active) return s.active
+    // Skip the initial activation — enter() already set the correct idx
+    if (prev === false || prev === undefined) return s.active
     if (!list.length) {
       exit()
-      return
+      return s.active
     }
     if (s.idx >= list.length) {
       sync(list.length - 1)
     }
+    return s.active
   })
 
   // --- derived ---
@@ -552,7 +660,7 @@ export function createCopyMode(input: {
 
   const highlights = createMemo(() => {
     const s = state()
-    if (!s.visual || !s.anchor) return new Map<string, CopyHighlight[]>()
+    if (!s.active || !s.visual || !s.anchor) return new Map<string, CopyHighlight[]>()
     const list = rows()
     const cache = new Map(
       input
@@ -590,9 +698,10 @@ export function createCopyMode(input: {
   return {
     prompt: {
       enter,
-      exit,
+      exit: (scrollToBottom?: boolean) => exit(scrollToBottom),
       visual,
       yank,
+      yankLine,
       copy,
       isVisual: () => !!state().visual,
       exitVisual,

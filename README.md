@@ -83,14 +83,15 @@ Works similarly to tmux copy mode within opencode tui.
 
 <img src=".github/demo-copy-mode.gif" style="border: 1px solid #555; border-radius: 4px;" />
 
-- Enter copy mode with `<leader>v`.
+- Enter copy mode with `<leader>v` (scrolls to latest message) or `Ctrl+W k` (stays in place).
+- Exit with `q` or `Escape` (scrolls to latest message), `Ctrl+W j` or `i` (stays in place, `i` returns to insert mode).
 - Navigate with `h` `j` `k` `l` or arrow keys (`Left` `Down` `Up` `Right`).
-- Press `v` / `V` to start character-wise or line-wise selection.
-- `y` yanks to the vim register.
-- `Enter` copies to the system clipboard.
-- `Escape` exits visual mode, `q` exits copy mode.
-- `z` `zt` `zz` `zb` adjust copy-mode scroll positioning.
 - `H` / `M` / `L` jump to the top / middle / bottom of the viewport.
+- Press `v` / `V` to start character-wise or line-wise selection.
+- `y` yanks visual selection to the vim register (stays in copy mode).
+- `yy` yanks the current line to the vim register with a brief highlight flash.
+- `Enter` copies to the system clipboard.
+- `z` `zt` `zz` `zb` adjust copy-mode scroll positioning.
 
 > [!TIP]
 > Configure the entry key with `keybinds.copy_mode` in your config if you want something other than `<leader>v`.

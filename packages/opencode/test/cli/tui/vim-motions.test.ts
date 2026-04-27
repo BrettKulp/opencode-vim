@@ -178,6 +178,7 @@ function createHandler(
   let copyYanks = 0
   let copyCopies = 0
   let copyExitVisuals = 0
+  const copyExits: Array<boolean | undefined> = []
 
   function clearPending() {
     setPending("")
@@ -267,6 +268,10 @@ function createHandler(
     isVisual: () => mode() === "visual" || mode() === "visual-line",
     isVisualLine: () => mode() === "visual-line",
     isCopy: () => mode() === "copy",
+    skipExitOnModeChange: () => false,
+    setSkipExitOnModeChange() {},
+    exitScrollToBottom: () => true,
+    setExitScrollToBottom() {},
   } as ReturnType<typeof createVimState>
   const handler = createVimHandler({
     enabled,
@@ -278,6 +283,8 @@ function createHandler(
     },
     jump(action) {
       jumpCalls.push(action)
+    },
+    navigate() {
     },
     copy(action) {
       copyMoves.push(action)
@@ -293,6 +300,13 @@ function createHandler(
     copyYank() {
       copyYanks++
       state.setRegister({ text: options?.copy?.text ?? "picked", linewise: false })
+    },
+    copyYankLine() {
+      copyYanks++
+      state.setRegister({ text: options?.copy?.text ?? "picked line", linewise: true })
+    },
+    copyExit(scrollToBottom) {
+      copyExits.push(scrollToBottom)
     },
     copyCopy() {
       copyCopies++
@@ -360,6 +374,7 @@ function createHandler(
     copyYanks: () => copyYanks,
     copyCopies: () => copyCopies,
     copyExitVisuals: () => copyExitVisuals,
+    copyExits,
     copyCol,
     copyIdx,
     meta,
@@ -2632,7 +2647,7 @@ describe("copy mode", () => {
     expect(ctx.copyVisualCalls).not.toContain("char")
   })
 
-  test("y yanks copy selection and exits copy mode", () => {
+  test("y yanks copy selection and stays in copy mode", () => {
     const ctx = createHandler("abc", { mode: "copy", copy: { text: "picked text", isVisual: true } })
 
     const evt = createEvent("y")
@@ -2641,7 +2656,7 @@ describe("copy mode", () => {
     expect(ctx.copyYanks()).toBe(1)
     expect(ctx.copyCopies()).toBe(0)
     expect(ctx.state.register()).toEqual({ text: "picked text", linewise: false })
-    expect(ctx.state.mode()).toBe("normal")
+    expect(ctx.state.mode()).toBe("copy")
   })
 
   test("return copies selection to clipboard path and exits copy mode", () => {
@@ -2830,6 +2845,83 @@ describe("copy mode", () => {
     expect(ctx.copyCopies()).toBe(0)
     expect(ctx.state.mode()).toBe("copy")
   })
+
+  test("Ctrl+W k enters copy mode from normal mode via navigate", () => {
+    const ctx = createHandler("abc", { mode: "normal" })
+    ctx.handler.handleKey(createEvent("w", { ctrl: true }).event)
+    expect(ctx.state.pending()).toBe("w")
+    ctx.handler.handleKey(createEvent("k").event)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("Ctrl+W j in copy mode exits without scrolling to bottom", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+    ctx.handler.handleKey(createEvent("w", { ctrl: true }).event)
+    expect(ctx.state.pending()).toBe("w")
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.state.mode()).toBe("normal")
+    expect(ctx.copyExits).toEqual([false])
+  })
+
+  test("i exits copy mode to insert without scrolling", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+    const evt = createEvent("i")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(ctx.state.mode()).toBe("insert")
+    expect(ctx.copyExits).toEqual([false])
+  })
+
+  test("i exits copy mode from visual mode to insert", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { isVisual: true } })
+    const evt = createEvent("i")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(ctx.state.mode()).toBe("insert")
+    expect(ctx.copyExitVisuals()).toBe(1)
+    expect(ctx.copyExits).toEqual([false])
+  })
+
+  test("y in visual mode yanks and exits visual but stays in copy mode", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "selected", isVisual: true } })
+    const evt = createEvent("y")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(ctx.copyYanks()).toBe(1)
+    expect(ctx.state.register()).toEqual({ text: "selected", linewise: false })
+    expect(ctx.state.mode()).toBe("copy")
+  })
+
+  test("y without visual sets pending y for yy", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+    const evt = createEvent("y")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(ctx.state.pending()).toBe("y")
+    expect(ctx.copyYanks()).toBe(0)
+    expect(ctx.state.mode()).toBe("copy")
+  })
+
+  test("yy yanks current line and stays in copy mode", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "whole line" } })
+    ctx.handler.handleKey(createEvent("y").event)
+    expect(ctx.state.pending()).toBe("y")
+    ctx.handler.handleKey(createEvent("y").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyYanks()).toBe(1)
+    expect(ctx.state.register()).toEqual({ text: "whole line", linewise: true })
+    expect(ctx.state.mode()).toBe("copy")
+  })
+
+  test("Ctrl+W j from visual in copy mode exits visual not copy", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { isVisual: true } })
+    ctx.handler.handleKey(createEvent("w", { ctrl: true }).event)
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.copyExitVisuals()).toBe(1)
+    expect(ctx.state.mode()).toBe("copy")
+  })
+
+  test("Ctrl+W sets pending w in copy mode", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+    ctx.handler.handleKey(createEvent("w", { ctrl: true }).event)
+    expect(ctx.state.pending()).toBe("w")
+  })
 })
 
 describe("copy mode cursor state", () => {
@@ -2837,8 +2929,8 @@ describe("copy mode cursor state", () => {
     const textarea = createTextarea("")
     const [enabled] = createSignal(true)
     const [mode, setMode] = createSignal<"normal" | "insert" | "replace" | "visual" | "visual-line" | "copy">("copy")
-    const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y">("")
-    const [lastFind, setLastFind] = createSignal<{ char: string; forward: boolean; till: boolean } | null>(null)
+  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "w">("")
+  const [lastFind, setLastFind] = createSignal<{ char: string; forward: boolean; till: boolean } | null>(null)
     const [register, setRegister] = createSignal<{ text: string; linewise: boolean } | null>(null)
     const [anchor, setAnchor] = createSignal<number | null>(null)
     const [replace, setReplace] = createSignal<number | null>(null)
@@ -2961,6 +3053,10 @@ describe("copy mode cursor state", () => {
       isVisual: () => mode() === "visual" || mode() === "visual-line",
       isVisualLine: () => mode() === "visual-line",
       isCopy: () => mode() === "copy",
+      skipExitOnModeChange: () => false,
+      setSkipExitOnModeChange() {},
+      exitScrollToBottom: () => true,
+      setExitScrollToBottom() {},
     } as ReturnType<typeof createVimState>
 
     const handler = createVimHandler({
@@ -2970,6 +3066,7 @@ describe("copy mode cursor state", () => {
       submit: () => {},
       scroll() {},
       jump() {},
+      navigate() {},
       copy(action) {
         if (action === "up" || action === "down") {
           const next = idx + (action === "up" ? -1 : 1)
@@ -2991,6 +3088,8 @@ describe("copy mode cursor state", () => {
       copyVisual() {},
       copyExitVisual() {},
       copyYank() {},
+      copyYankLine() {},
+      copyExit() {},
       copyCopy() {},
       copyIsVisual() {
         return false

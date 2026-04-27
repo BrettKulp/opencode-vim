@@ -89,9 +89,10 @@ export type PromptProps = {
   }
   copy?: {
     enter: () => void
-    exit: () => void
+    exit: (scrollToBottom?: boolean) => void
     visual: (mode: "char" | "line") => void
     yank: () => { text: string; linewise: boolean } | null
+    yankLine: () => { text: string; linewise: boolean } | null
     copy: () => Promise<void> | void
     isVisual: () => boolean
     exitVisual: () => void
@@ -365,6 +366,24 @@ export function Prompt(props: PromptProps) {
     return input.plainText.length > 0
   }
 
+  function handleNavigation(action: "up" | "down") {
+    if (!props.copy) return
+    if (action === "up" && !vimState.isCopy()) {
+      vimState.setMode("copy")
+      props.copy.enter()
+    }
+    if (action === "down" && vimState.isCopy()) {
+      const skipExit = vimState.skipExitOnModeChange()
+      const scrollToBottom = vimState.exitScrollToBottom()
+      vimState.setSkipExitOnModeChange(false)
+      vimState.setExitScrollToBottom(true)
+      vimState.setMode("normal")
+      if (!skipExit) {
+        props.copy.exit(scrollToBottom)
+      }
+    }
+  }
+
   function promptJump(action: "top" | "bottom" | "high" | "middle" | "low") {
     if (!input || input.isDestroyed) return
     if (action === "top") {
@@ -417,6 +436,9 @@ export function Prompt(props: PromptProps) {
       if (action === "top") command.trigger("session.first")
       if (action === "bottom") command.trigger("session.last")
     },
+    navigate(action) {
+      handleNavigation(action)
+    },
     copy(action) {
       props.copy?.move(action)
     },
@@ -426,8 +448,15 @@ export function Prompt(props: PromptProps) {
     copyExitVisual() {
       props.copy?.exitVisual()
     },
+    copyExit(scrollToBottom) {
+      props.copy?.exit(scrollToBottom)
+    },
     copyYank() {
       const reg = props.copy?.yank()
+      if (reg) vimState.setRegister(reg)
+    },
+    copyYankLine() {
+      const reg = props.copy?.yankLine()
       if (reg) vimState.setRegister(reg)
     },
     copyCopy() {
@@ -1390,7 +1419,13 @@ export function Prompt(props: PromptProps) {
                   if (vimState.isCopy()) {
                     const active = vimState.isCopy()
                     vim.handleKey(e)
-                    if (active && !vimState.isCopy()) props.copy?.exit()
+                    if (active && !vimState.isCopy()) {
+                      const skipExit = vimState.skipExitOnModeChange()
+                      const scrollToBottom = vimState.exitScrollToBottom()
+                      vimState.setSkipExitOnModeChange(false)
+                      vimState.setExitScrollToBottom(true)
+                      if (!skipExit) props.copy?.exit(scrollToBottom)
+                    }
                     if (!e.defaultPrevented) e.preventDefault()
                     return
                   }
