@@ -186,6 +186,7 @@ function createHandler(
   const copyVisualCalls: Array<"char" | "line"> = []
   const copyScrollCalls: Array<"center" | "top" | "bottom"> = []
   let copyYanks = 0
+  let copyYankLines = 0
   let copyCopies = 0
   let copyExitVisuals = 0
 
@@ -306,6 +307,10 @@ function createHandler(
       copyYanks++
       state.setRegister({ text: options?.copy?.text ?? "picked", linewise: false })
     },
+    copyYankLine() {
+      copyYankLines++
+      state.setRegister({ text: options?.copy?.text ?? "picked line", linewise: true })
+    },
     copyCopy() {
       copyCopies++
     },
@@ -388,6 +393,7 @@ function createHandler(
     copyVisualCalls,
     copyScrollCalls,
     copyYanks: () => copyYanks,
+    copyYankLines: () => copyYankLines,
     copyCopies: () => copyCopies,
     copyExitVisuals: () => copyExitVisuals,
     copyCol,
@@ -4359,6 +4365,29 @@ describe("copy mode", () => {
     expect(ctx.copyYanks()).toBe(1)
     expect(ctx.copyCopies()).toBe(0)
     expect(ctx.state.register()).toEqual({ text: "picked text", linewise: false })
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("yy yanks current line and exits copy mode", async () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "picked line" } })
+
+    const first = createEvent("y")
+    expect(ctx.handler.handleKey(first.event)).toBe(true)
+    expect(first.prevented()).toBe(true)
+    expect(ctx.copyYankLines()).toBe(0)
+    expect(ctx.state.pending()).toBe("y")
+
+    const second = createEvent("y")
+    expect(ctx.handler.handleKey(second.event)).toBe(true)
+    expect(second.prevented()).toBe(true)
+    expect(ctx.copyYankLines()).toBe(1)
+    expect(ctx.copyYanks()).toBe(0)
+    expect(ctx.copyCopies()).toBe(0)
+    expect(ctx.state.register()).toEqual({ text: "picked line", linewise: true })
+    expect(ctx.state.pending()).toBe("")
+
+    // Wait for setTimeout to complete
+    await new Promise((resolve) => setTimeout(resolve, 200))
     expect(ctx.state.mode()).toBe("normal")
   })
 

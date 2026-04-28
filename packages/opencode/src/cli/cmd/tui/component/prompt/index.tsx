@@ -93,6 +93,7 @@ export type PromptProps = {
     exit: () => void
     visual: (mode: "char" | "line") => void
     yank: () => { text: string; linewise: boolean } | null
+    yankLine: () => { text: string; linewise: boolean } | null
     copy: () => Promise<void> | void
     isVisual: () => boolean
     exitVisual: () => void
@@ -514,8 +515,15 @@ export function Prompt(props: PromptProps) {
     copyExitVisual() {
       props.copy?.exitVisual()
     },
+    copyExit() {
+      props.copy?.exit()
+    },
     copyYank() {
       const reg = props.copy?.yank()
+      if (reg) setVimRegister(reg, true)
+    },
+    copyYankLine() {
+      const reg = props.copy?.yankLine()
       if (reg) setVimRegister(reg, true)
     },
     copyCopy() {

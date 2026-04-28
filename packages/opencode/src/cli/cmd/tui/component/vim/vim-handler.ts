@@ -83,7 +83,9 @@ export function createVimHandler(input: {
   copy?: (action: VimCopyMove) => void
   copyVisual?: (mode: "char" | "line") => void
   copyExitVisual?: () => void
+  copyExit?: () => void
   copyYank?: () => void
+  copyYankLine?: () => void
   copyCopy?: () => void
   copyIsVisual?: () => boolean
   copyJump?: (action: VimJump) => void
@@ -1011,8 +1013,25 @@ export function createVimHandler(input: {
     }
 
     if (key === "y") {
-      input.copyYank?.()
-      input.state.setMode("normal")
+      // If in visual mode, yank selection and exit (original y behavior)
+      if (input.copyIsVisual?.()) {
+        input.copyYank?.()
+        input.state.setMode("normal")
+        event.preventDefault()
+        return true
+      }
+      // Not in visual mode - handle yy for yanking current line
+      if (input.state.pending() === "y") {
+        input.state.clearPending()
+        input.copyYankLine?.()
+        setTimeout(() => {
+          input.state.setMode("normal")
+          input.copyExit?.()
+        }, 150)
+        event.preventDefault()
+        return true
+      }
+      input.state.setPending("y")
       event.preventDefault()
       return true
     }
@@ -1225,6 +1244,11 @@ export function createVimHandler(input: {
     if (isPrintable(event)) {
       event.preventDefault()
       return true
+    }
+
+    // Clear y pending if no handler matched
+    if (input.state.pending() === "y") {
+      input.state.clearPending()
     }
 
     return false

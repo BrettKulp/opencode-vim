@@ -59,6 +59,7 @@ export function createCopyMode(input: {
   toBottom: () => void
 }) {
   const [state, setState] = createSignal<CopyState>({ ...empty })
+  const [yankLineFlash, setYankLineFlash] = createSignal<number | undefined>(undefined)
 
   // --- row building ---
 
@@ -329,6 +330,7 @@ export function createCopyMode(input: {
   }
 
   function exit() {
+    setYankLineFlash(undefined)
     setState({ ...empty })
     input.toBottom()
   }
@@ -484,6 +486,23 @@ export function createCopyMode(input: {
     return { text, linewise: false }
   }
 
+  function yankLine() {
+    const list = rows()
+    const s = state()
+    const row = list[s.idx]
+    if (!row) return null
+    const cache = new Map(
+      input
+        .scroll()
+        .getChildren()
+        .map((c) => [c.id, c]),
+    )
+    const text = signedText(row, cache)
+    setYankLineFlash(s.idx)
+    setTimeout(() => setYankLineFlash(undefined), 150)
+    return { text, linewise: true }
+  }
+
   async function copy() {
     const text = selectionText()
     if (!text) return
@@ -593,7 +612,36 @@ export function createCopyMode(input: {
 
   const highlights = createMemo(() => {
     const s = state()
-    if (!s.visual || !s.anchor) return new Map<string, CopyHighlight[]>()
+    const flashIdx = yankLineFlash()
+    const out = new Map<string, CopyHighlight[]>()
+
+    // Handle yy flash highlight
+    if (flashIdx !== undefined) {
+      const list = rows()
+      const row = list[flashIdx]
+      if (row) {
+        const cache = new Map(
+          input
+            .scroll()
+            .getChildren()
+            .map((c) => [c.id, c]),
+        )
+        const text = rowText(row, cache) || ""
+        const min = copyMin(row, cache)
+        const max = text.length > 0 ? min + text.length - 1 : min
+        const cur = out.get(row.id) ?? []
+        cur.push({
+          line: row.line,
+          left: min,
+          right: max,
+          text: text.slice(Math.max(0, min - min), Math.max(0, max - min + 1)),
+        })
+        out.set(row.id, cur)
+      }
+    }
+
+    // Handle visual mode highlights
+    if (!s.visual || !s.anchor) return out
     const list = rows()
     const cache = new Map(
       input
@@ -605,7 +653,6 @@ export function createCopyMode(input: {
     const h = { idx: s.idx, col: s.col }
     const start = a.idx <= h.idx ? a : h
     const end = a.idx <= h.idx ? h : a
-    const out = new Map<string, CopyHighlight[]>()
     for (let i = start.idx; i <= end.idx; i++) {
       const r = list[i]
       if (!r) continue
@@ -634,6 +681,7 @@ export function createCopyMode(input: {
       exit,
       visual,
       yank,
+      yankLine,
       copy,
       isVisual: () => !!state().visual,
       exitVisual,
@@ -653,6 +701,7 @@ export function createCopyMode(input: {
     },
     row,
     highlights,
+    yankLineFlash: () => yankLineFlash(),
     active: () => state().active,
     clamp,
     state,
