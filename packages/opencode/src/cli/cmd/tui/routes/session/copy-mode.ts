@@ -330,7 +330,6 @@ export function createCopyMode(input: {
   }
 
   function exit() {
-    setYankLineFlash(undefined)
     setState({ ...empty })
     input.toBottom()
   }
@@ -499,7 +498,7 @@ export function createCopyMode(input: {
     )
     const text = signedText(row, cache)
     setYankLineFlash(s.idx)
-    setTimeout(() => setYankLineFlash(undefined), 150)
+    setTimeout(() => setYankLineFlash(undefined), 70)
     return { text, linewise: true }
   }
 

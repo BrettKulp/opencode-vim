@@ -950,6 +950,7 @@ export function createVimHandler(input: {
 
   function copy(event: VimEvent, key: string): boolean {
     if (key === "q") {
+      input.state.clearPending()
       input.state.setMode("normal")
       event.preventDefault()
       return true
@@ -961,6 +962,7 @@ export function createVimHandler(input: {
         event.preventDefault()
         return true
       }
+      input.state.clearPending()
       input.state.setMode("normal")
       event.preventDefault()
       return true
@@ -1024,10 +1026,8 @@ export function createVimHandler(input: {
       if (input.state.pending() === "y") {
         input.state.clearPending()
         input.copyYankLine?.()
-        setTimeout(() => {
-          input.state.setMode("normal")
-          input.copyExit?.()
-        }, 150)
+        input.state.setMode("normal")
+        input.copyExit?.()
         event.preventDefault()
         return true
       }
@@ -1044,6 +1044,9 @@ export function createVimHandler(input: {
     }
 
     const pending = input.state.pending()
+    if (pending === "y") {
+      input.state.clearPending()
+    }
     if (pending === "f" || pending === "F" || pending === "t" || pending === "T") {
       if (key.length === 1) {
         const forward = pending === "f" || pending === "t"
