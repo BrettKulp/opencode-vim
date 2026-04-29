@@ -73,7 +73,6 @@ export function createVimHandler(input: {
   copyExitVisual?: () => void
   copyExit?: (scrollToBottom?: boolean) => void
   copyYank?: () => void
-  copyYankLine?: () => void
   copyCopy?: () => void
   copyIsVisual?: () => boolean
   copyJump?: (action: VimJump) => void
@@ -836,23 +835,12 @@ export function createVimHandler(input: {
       return true
     }
 
-    if (key === "y" && input.state.pending() === "y") {
-      // yy — yank current line with flash highlight
-      input.state.clearPending()
-      input.copyYankLine?.()
-      event.preventDefault()
-      return true
-    }
-
     if (key === "y") {
-      if (!input.copyIsVisual?.()) {
-        // first y — set pending for yy
-        input.state.setPending("y")
-      } else {
-        // y in visual — yank selection, flash highlight then clear
+      if (input.copyIsVisual?.()) {
         input.copyYank?.()
-        setTimeout(() => input.copyExitVisual?.(), 150)
+        input.copyExitVisual?.()
       }
+      input.copyExit?.(true)
       event.preventDefault()
       return true
     }

@@ -301,10 +301,6 @@ function createHandler(
       copyYanks++
       state.setRegister({ text: options?.copy?.text ?? "picked", linewise: false })
     },
-    copyYankLine() {
-      copyYanks++
-      state.setRegister({ text: options?.copy?.text ?? "picked line", linewise: true })
-    },
     copyExit(scrollToBottom) {
       copyExits.push(scrollToBottom)
     },
@@ -2647,7 +2643,7 @@ describe("copy mode", () => {
     expect(ctx.copyVisualCalls).not.toContain("char")
   })
 
-  test("y yanks copy selection and stays in copy mode", () => {
+  test("y yanks copy selection in copy mode", () => {
     const ctx = createHandler("abc", { mode: "copy", copy: { text: "picked text", isVisual: true } })
 
     const evt = createEvent("y")
@@ -2656,7 +2652,7 @@ describe("copy mode", () => {
     expect(ctx.copyYanks()).toBe(1)
     expect(ctx.copyCopies()).toBe(0)
     expect(ctx.state.register()).toEqual({ text: "picked text", linewise: false })
-    expect(ctx.state.mode()).toBe("copy")
+    expect(ctx.copyExits).toEqual([true])
   })
 
   test("return copies selection to clipboard path and exits copy mode", () => {
@@ -2880,33 +2876,13 @@ describe("copy mode", () => {
     expect(ctx.copyExits).toEqual([false])
   })
 
-  test("y in visual mode yanks and exits visual but stays in copy mode", () => {
+  test("y in visual mode in copy mode yanks and exits copy mode", () => {
     const ctx = createHandler("abc", { mode: "copy", copy: { text: "selected", isVisual: true } })
     const evt = createEvent("y")
     expect(ctx.handler.handleKey(evt.event)).toBe(true)
     expect(ctx.copyYanks()).toBe(1)
     expect(ctx.state.register()).toEqual({ text: "selected", linewise: false })
-    expect(ctx.state.mode()).toBe("copy")
-  })
-
-  test("y without visual sets pending y for yy", () => {
-    const ctx = createHandler("abc", { mode: "copy" })
-    const evt = createEvent("y")
-    expect(ctx.handler.handleKey(evt.event)).toBe(true)
-    expect(ctx.state.pending()).toBe("y")
-    expect(ctx.copyYanks()).toBe(0)
-    expect(ctx.state.mode()).toBe("copy")
-  })
-
-  test("yy yanks current line and stays in copy mode", () => {
-    const ctx = createHandler("abc", { mode: "copy", copy: { text: "whole line" } })
-    ctx.handler.handleKey(createEvent("y").event)
-    expect(ctx.state.pending()).toBe("y")
-    ctx.handler.handleKey(createEvent("y").event)
-    expect(ctx.state.pending()).toBe("")
-    expect(ctx.copyYanks()).toBe(1)
-    expect(ctx.state.register()).toEqual({ text: "whole line", linewise: true })
-    expect(ctx.state.mode()).toBe("copy")
+    expect(ctx.copyExits).toEqual([true])
   })
 
   test("Ctrl+W j from visual in copy mode exits visual not copy", () => {

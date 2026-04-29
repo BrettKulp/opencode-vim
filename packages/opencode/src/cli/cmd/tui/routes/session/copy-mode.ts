@@ -490,19 +490,6 @@ export function createCopyMode(input: {
     setState((s) => ({ ...s, visual: undefined, anchor: undefined }))
   }
 
-  let yankFlashTimer: ReturnType<typeof setTimeout> | undefined
-  function yankLine() {
-    visual("line")
-    const reg = yank()
-    // Keep the highlight visible briefly, then clear
-    if (yankFlashTimer) clearTimeout(yankFlashTimer)
-    yankFlashTimer = setTimeout(() => {
-      yankFlashTimer = undefined
-      exitVisual()
-    }, 150)
-    return reg
-  }
-
   function selectionText(): string {
     const s = state()
     if (!s.visual || !s.anchor) return ""
@@ -701,7 +688,6 @@ export function createCopyMode(input: {
       exit: (scrollToBottom?: boolean) => exit(scrollToBottom),
       visual,
       yank,
-      yankLine,
       copy,
       isVisual: () => !!state().visual,
       exitVisual,
