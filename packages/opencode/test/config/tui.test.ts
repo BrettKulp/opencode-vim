@@ -4,9 +4,9 @@ import fs from "fs/promises"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "../../src/project/instance"
 import { TuiConfig } from "../../src/cli/cmd/tui/config/tui"
-import { Config } from "../../src/config"
-import { Global } from "../../src/global"
-import { Filesystem } from "../../src/util"
+import { Config } from "@/config/config"
+import { Global } from "@opencode-ai/core/global"
+import { Filesystem } from "@/util/filesystem"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { Effect, Layer } from "effect"
 import { CurrentWorkingDirectory } from "@/cli/cmd/tui/config/cwd"
@@ -388,6 +388,18 @@ test("merges keybind overrides across precedence layers", async () => {
   const config = await getTuiConfig(tmp.path)
   expect(config.keybinds?.app_exit).toBe("ctrl+q")
   expect(config.keybinds?.theme_list).toBe("ctrl+k")
+})
+
+test("defaults copy mode to leader v", async () => {
+  await using tmp = await tmpdir()
+  const config = await getTuiConfig(tmp.path)
+  expect(config.keybinds?.copy_mode).toBe("<leader>v")
+})
+
+test("defaults prompt copy selection to leader y", async () => {
+  await using tmp = await tmpdir()
+  const config = await getTuiConfig(tmp.path)
+  expect(config.keybinds?.prompt_copy_selection).toBe("<leader>y")
 })
 
 wintest("defaults Ctrl+Z to input undo on Windows", async () => {

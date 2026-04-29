@@ -9,7 +9,7 @@ import {
   type PluginSource,
 } from "./shared"
 import { ConfigPlugin } from "@/config/plugin"
-import { InstallationVersion } from "@/installation/version"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 export namespace PluginLoader {
   // A normalized plugin declaration derived from config before any filesystem or npm work happens.
@@ -77,7 +77,7 @@ export namespace PluginLoader {
     // First make sure the plugin exists locally, installing npm plugins on demand.
     let target = ""
     try {
-      target = await resolvePluginTarget(plan.spec)
+      target = await resolvePluginTarget(plan.spec, kind)
     } catch (error) {
       return { ok: false, stage: "install", error }
     }

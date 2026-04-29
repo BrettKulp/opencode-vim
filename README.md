@@ -50,26 +50,33 @@ ocv update
 
 ### Vim motions
 
+Toggle via command palette (`Ctrl+p` -> `Toggle vim mode`).
+
 **Movement**
 
-`h` `j` `k` `l` `w` `b` `e` `W` `B` `E` `0` `^` `_` `$` `gg` `G`
+`h` `j` `k` `l` `w` `b` `e` `W` `B` `E` `0` `^` `_` `$` `{` `}` `gg` `G`
 `f` `F` `t` `T` `;` `,`
 `Ctrl+e` `Ctrl+y` `Ctrl+d` `Ctrl+u` `Ctrl+f` `Ctrl+b`
 
+> [!NOTE]
+> Unicode word boundaries are not supported.
+
 **Editing**
 
-`i` `I` `a` `A` `o` `O` `R` `x` `~` `dd` `dw` `cc` `cw` `S` `J`
+`i` `I` `a` `A` `o` `O` `R` `x` `~` `dd` `dw` `db` `d}` `d{` `cc` `cw` `cb` `C` `c}` `c{` `S` `J`
 
-**Yank / put / undo**
+**yank / put / undo**
 
-`yy` `yw` `p` `P` `u` `Ctrl+r`
+`yy` `yw` `y}` `y{` `p` `P` `u` `ctrl+r`
+
+- Copy the current prompt selection with `<leader>y` (default: `ctrl+x` then `y`).
+- Configure it with `keybinds.prompt_copy_selection`.
+- If a prompt selection exists, `<leader>y` copies it. Otherwise it keeps the existing message copy behavior.
+- To sync yanks and pastes with the system clipboard, see [System clipboard register](#system-clipboard-register).
 
 **Visual**
 
 `v` `V`
-
-> [!TIP]
-> Toggle via command palette (`Ctrl+p` -> `Toggle vim mode`).
 
 ### Anthropic OAuth
 
@@ -130,20 +137,56 @@ Hides extra UI hints and tips.
 | -------------------------------------------------- | ------------------------------------------------- |
 | <img src=".github/minimal-ui-off.png" width="400"> | <img src=".github/minimal-ui-on.png" width="400"> |
 
-> [!TIP]
-> Toggle via command palette (`Ctrl+p` -> `Toggle minimal ui`).
+Toggle via command palette (`Ctrl+p` -> `Toggle minimal ui`).
 
 ## Configuration
 
 ### Submit behavior
 
-By default, vim insert mode keeps `Enter` for newlines. If you want `Enter` to submit instead, add this to `tui.json`:
+By default, vim insert mode keeps `Enter` for newlines and normal mode uses `Enter` to submit. If you want `Enter` to submit from insert mode too, add this to `tui.json`:
 
 ```json
 {
   "vim_enter_submit": true
 }
 ```
+
+When `vim_enter_submit` is enabled, line returns are still available through `input_newline`.
+
+```json
+{
+  "keybinds": {
+    "input_newline": "alt+return"
+  }
+}
+```
+
+If you keep `vim_enter_submit` disabled but want a separate submit key that works from insert mode, configure `input_force_submit`:
+
+```json
+{
+  "keybinds": {
+    "input_force_submit": "alt+return"
+  }
+}
+```
+
+By default, `input_force_submit` is unbound.
+
+### System clipboard register
+
+By default, vim mode uses an internal register for `y` and `p`. If you want yank and paste to use the system clipboard instead, add this to `tui.json`:
+
+```json
+{
+  "vim_system_clipboard_register": true
+}
+```
+
+With this enabled, yank operations sync to the system clipboard and `p` / `P` paste from it.
+
+> [!NOTE]
+> Terminal/OS clipboard shortcuts don’t preserve Vim linewise register state. External clipboard text is pasted as characterwise text.
 
 ## Feedback
 

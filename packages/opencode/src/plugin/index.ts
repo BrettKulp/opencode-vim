@@ -5,22 +5,22 @@ import type {
   PluginModule,
   WorkspaceAdaptor as PluginWorkspaceAdaptor,
 } from "@opencode-ai/plugin"
-import { Config } from "../config"
-import { ConfigPlugin } from "../config/plugin"
+import { Config } from "@/config/config"
+import { ConfigPlugin } from "@/config/plugin"
 import { Bus } from "../bus"
-import { Log } from "../util"
+import * as Log from "@opencode-ai/core/util/log"
 import { createOpencodeClient } from "@opencode-ai/sdk"
-import { Flag } from "../flag/flag"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { CodexAuthPlugin } from "./codex"
-import { Session } from "../session"
-import { NamedError } from "@opencode-ai/shared/util/error"
+import { Session } from "@/session/session"
+import { NamedError } from "@opencode-ai/core/util/error"
 import { CopilotAuthPlugin } from "./github-copilot/copilot"
 import { gitlabAuthPlugin as GitlabAuthPlugin } from "opencode-gitlab-auth"
 import { PoeAuthPlugin } from "opencode-poe-auth"
 import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cloudflare"
 import { Effect, Layer, Context, Stream } from "effect"
-import { EffectBridge } from "@/effect"
-import { InstanceState } from "@/effect"
+import { EffectBridge } from "@/effect/bridge"
+import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
 import { PluginLoader } from "./loader"
 import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
@@ -28,7 +28,7 @@ import { registerAdaptor } from "@/control-plane/adaptors"
 import type { WorkspaceAdaptor } from "@/control-plane/types"
 
 const log = Log.create({ service: "plugin" })
-const BUILTIN = ["op-anthropic-auth@0.1.2"]
+const BUILTIN = ["op-anthropic-auth"]
 const BUILTIN_ORIGINS = BUILTIN.map((spec) => ({
   spec,
   scope: "global" as const,
@@ -138,7 +138,7 @@ export const layer = Layer.effect(
                 Authorization: `Basic ${Buffer.from(`${Flag.OPENCODE_SERVER_USERNAME ?? "opencode"}:${Flag.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`,
               }
             : undefined,
-          fetch: async (...args) => (await Server.Default()).app.fetch(...args),
+          fetch: async (...args) => Server.Default().app.fetch(...args),
         })
         const cfg = yield* config.get()
         const input: PluginInput = {

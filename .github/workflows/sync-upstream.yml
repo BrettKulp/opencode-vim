@@ -5,6 +5,10 @@ on:
     - cron: "0 */6 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -44,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
-          upstream=$(git log --oneline | grep "^[a-f0-9]* release: v" | head -1 | sed 's/.* release: v//')
+          upstream=$(gh release list --repo sst/opencode --exclude-drafts --exclude-pre-releases --limit 200 --json tagName -q 'map(.tagName | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))) | .[0] // ""' | sed 's/^v//')
           current=$(gh release list --repo ${{ github.repository }} --limit 200 --json tagName -q 'map(.tagName | sub("^v"; "")) | map(select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-ocv\\.[0-9]+\\.[0-9]+$"))) | .[0] // ""')
           track=$(tr -d '[:space:]' < .github/ocv-track)
           upstream_base=$(echo "$upstream" | sed -E 's/-(vim|ocv)\..*$//')
@@ -71,19 +75,43 @@ jobs:
           echo "exists=$exists" >> "$GITHUB_OUTPUT"
 
       - name: Trigger release
-        if: steps.version.outputs.upstream_base != '' && steps.version.outputs.upstream_base != steps.version.outputs.current_base && steps.version.outputs.exists != 'true'
+        if: steps.version.outputs.upstream_base != '' && steps.version.outputs.release != steps.version.outputs.current && steps.version.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: gh workflow run publish-ocv.yml --repo ${{ github.repository }} --ref ocv -f version=${{ steps.version.outputs.release }}
+
+      - name: Close failure issue on success
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          issues=$(gh issue list --repo ${{ github.repository }} --state open --limit 1000 --json number,title -q '.[] | select(.title == "[ci]: sync upstream failed" or .title == "[actions]: sync upstream failed") | .number')
+          if [ -z "$issues" ]; then
+            exit 0
+          fi
+          printf '%s\n' "$issues" | while read -r number; do
+            gh issue close "$number" --repo ${{ github.repository }} --comment "Closed automatically after a successful sync run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          done
 
       - name: Notify on failure
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
-          existing=$(gh issue list --repo ${{ github.repository }} --search "[actions]: sync upstream failed" --state open --json number -q '.[0].number')
-          if [ -z "$existing" ]; then
-            gh issue create --repo ${{ github.repository }} \
-              --title "[actions]: sync upstream failed" \
-              --body "Sync workflow failed. Likely a merge conflict. [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          issues=$(gh issue list --repo ${{ github.repository }} --state open --limit 1000 --json number,title -q '.[] | select(.title == "[ci]: sync upstream failed" or .title == "[actions]: sync upstream failed") | [.number, .title] | @tsv')
+          tracker=$(printf '%s\n' "$issues" | awk -F '\t' '$2 == "[ci]: sync upstream failed" { print $1; exit }')
+          if [ -z "$tracker" ]; then
+            tracker=$(printf '%s\n' "$issues" | awk -F '\t' 'NF { print $1; exit }')
+            if [ -n "$tracker" ]; then
+              gh issue edit "$tracker" --repo ${{ github.repository }} --title "[ci]: sync upstream failed"
+            fi
           fi
+          if [ -z "$tracker" ]; then
+            gh issue create --repo ${{ github.repository }} \
+              --title "[ci]: sync upstream failed" \
+              --body "Sync workflow failed. Likely a merge conflict. [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            exit 0
+          fi
+          printf '%s\n' "$issues" | awk -F '\t' -v tracker="$tracker" 'NF && $1 != tracker { print $1 }' | while read -r number; do
+            gh issue close "$number" --repo ${{ github.repository }} --comment "Closing duplicate; tracking this failure in #$tracker."
+          done

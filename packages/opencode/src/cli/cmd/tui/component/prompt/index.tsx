@@ -24,7 +24,7 @@ import {
 import "opentui-spinner/solid"
 import path from "path"
 import { fileURLToPath } from "url"
-import { Filesystem } from "@/util"
+import { Filesystem } from "@/util/filesystem"
 import { useLocal } from "@tui/context/local"
 import { tint, useTheme } from "@tui/context/theme"
 import { EmptyBorder, SplitBorder } from "@tui/component/border"
@@ -33,6 +33,7 @@ import { useRoute } from "@tui/context/route"
 import { useProject } from "@tui/context/project"
 import { useSync } from "@tui/context/sync"
 import { useEvent } from "@tui/context/event"
+import { useEditorContext } from "@tui/context/editor"
 import { MessageID, PartID } from "@/session/schema"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { useKeybind } from "@tui/context/keybind"
@@ -42,7 +43,7 @@ import { usePromptStash } from "./stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useCommandDialog } from "../dialog-command"
-import { useRenderer, type JSX } from "@opentui/solid"
+import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import * as Editor from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import { useTuiConfig } from "../../context/tui-config"
@@ -50,7 +51,7 @@ import * as Clipboard from "../../util/clipboard"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
-import { Locale } from "@/util"
+import { Locale } from "@/util/locale"
 import { formatDuration } from "@/util/format"
 import { createColors, createFrames } from "../../ui/spinner.ts"
 import { useDialog } from "@tui/ui/dialog"
@@ -65,7 +66,7 @@ import { DialogWorkspaceCreate, restoreWorkspaceSession } from "../dialog-worksp
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "@tui/context/args"
 import { useVimEnabled } from "../vim"
-import { createVimState, type VimMode } from "../vim/vim-state"
+import { createVimState, type VimMode, type VimRegister } from "../vim/vim-state"
 import { createVimHandler } from "../vim/vim-handler"
 import { clearSelection } from "../vim/vim-motions"
 import { vimScroll } from "../vim/vim-scroll"
@@ -101,6 +102,8 @@ export type PromptProps = {
     jump: (action: "top" | "bottom" | "high" | "middle" | "low") => void
     wordNext: (big: boolean) => boolean
     wordPrev: (big: boolean) => boolean
+    nextParagraph: () => boolean
+    previousParagraph: () => boolean
     text: () => string
     col: () => number
     setCol: (offset: number) => void
@@ -120,8 +123,6 @@ export type PromptRef = {
   submit(): void
 }
 
-const PLACEHOLDERS = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
-const SHELL_PLACEHOLDERS = ["ls -la", "git status", "pwd"]
 let lastVimMode: VimMode = "insert"
 const EMPTY_RENDER = "__vim_empty_render"
 const money = new Intl.NumberFormat("en-US", {
@@ -150,6 +151,7 @@ export function Prompt(props: PromptProps) {
   const local = useLocal()
   const args = useArgs()
   const sdk = useSDK()
+  const editor = useEditorContext()
   const route = useRoute()
   const project = useProject()
   const sync = useSync()
@@ -160,13 +162,37 @@ export function Prompt(props: PromptProps) {
   const stash = usePromptStash()
   const command = useCommandDialog()
   const renderer = useRenderer()
+  const dimensions = useTerminalDimensions()
   const { theme, syntax } = useTheme()
   const kv = useKV()
   const vimEnabled = useVimEnabled()
   const mini = createMemo(() => kv.get("ui_minimal", false))
   const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
-  const list = createMemo(() => props.placeholders?.normal ?? PLACEHOLDERS)
-  const shell = createMemo(() => props.placeholders?.shell ?? SHELL_PLACEHOLDERS)
+  const list = createMemo(() => props.placeholders?.normal ?? [])
+  const shell = createMemo(() => props.placeholders?.shell ?? [])
+  const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
+  const editorPath = createMemo(() => (fileContextEnabled() ? editor.selection()?.filePath : undefined))
+  const editorSelectionLabel = createMemo(() => {
+    const selection = fileContextEnabled() ? editor.selection()?.selection : undefined
+    if (!selection) return
+    if (selection.start.line === selection.end.line && selection.start.character === selection.end.character) return
+    if (selection.start.line === selection.end.line) return `#${selection.start.line}`
+    return `#${selection.start.line}-${selection.end.line}`
+  })
+  const editorFileLabel = createMemo(() => {
+    const value = editorPath()
+    if (!value) return
+    const filename = path.basename(value)
+    const file = /^index\.[^./]+$/.test(filename)
+      ? [path.basename(path.dirname(value)), filename].filter(Boolean).join("/")
+      : filename
+    return `${file.split(path.sep).join("/")}${editorSelectionLabel() ?? ""}`
+  })
+  const editorFileLabelDisplay = createMemo(() => {
+    const file = editorFileLabel()
+    if (!file) return
+    return Locale.truncateMiddle(file, Math.max(12, Math.min(48, Math.floor(dimensions().width / 3))))
+  })
   const [auto, setAuto] = createSignal<AutocompleteRef>()
   const maxHeight = createMemo(() => cfg?.prompt_max_height ?? 6)
   const showScrollbar = createMemo(() => cfg?.prompt_scrollbar !== false)
@@ -357,9 +383,14 @@ export function Prompt(props: PromptProps) {
   })
   let flash = 0
   let timer: ReturnType<typeof setTimeout> | undefined
+  let clipboardRegister: VimRegister = null
   onCleanup(() => {
     if (timer) clearTimeout(timer)
   })
+
+  function useSystemClipboardRegister() {
+    return !!cfg.vim_system_clipboard_register
+  }
 
   function promptActive() {
     if (!input || input.isDestroyed) return false
@@ -382,6 +413,61 @@ export function Prompt(props: PromptProps) {
         props.copy.exit(scrollToBottom)
       }
     }
+  }
+
+  function promptSelectionText() {
+    if (!input || input.isDestroyed) return
+    const text = input.editorView.getSelectedText()
+    if (!text) return
+    return text
+  }
+
+  async function copyPromptSelection() {
+    const text = promptSelectionText()
+    if (!text) return false
+    return Clipboard.copy(text)
+      .then(() => {
+        toast.show({ message: "Copied to clipboard", variant: "info" })
+        return true
+      })
+      .catch((error) => {
+        toast.error(error)
+        return false
+      })
+  }
+
+  function setVimRegister(register: VimRegister, notify = false) {
+    if (!useSystemClipboardRegister()) {
+      vimState.setRegister(register)
+      return
+    }
+    clipboardRegister = register
+    if (!register) return
+    Clipboard.copy(register.text)
+      .then(() => {
+        if (notify) toast.show({ message: "Copied to clipboard", variant: "info" })
+      })
+      .catch(toast.error)
+  }
+
+  async function syncVimRegisterFromClipboard() {
+    if (!useSystemClipboardRegister()) return
+    const content = await Clipboard.read()
+    if (content?.mime !== "text/plain" || !content.data) {
+      clipboardRegister = null
+      return
+    }
+    clipboardRegister = {
+      text: content.data,
+      linewise: clipboardRegister?.text === content.data ? clipboardRegister.linewise : false,
+    }
+  }
+
+  function shouldSyncVimRegister(event: { name?: string; ctrl?: boolean; meta?: boolean; super?: boolean }) {
+    if (!useSystemClipboardRegister() || !vimEnabled()) return false
+    if (event.ctrl || event.meta || event.super) return false
+    if (vimState.isInsert() || vimState.isReplace() || vimState.isCopy()) return false
+    return event.name?.toLowerCase() === "p"
   }
 
   function promptJump(action: "top" | "bottom" | "high" | "middle" | "low") {
@@ -415,6 +501,8 @@ export function Prompt(props: PromptProps) {
     enabled: vimEnabled,
     state: vimState,
     textarea: () => input,
+    register: () => (useSystemClipboardRegister() ? clipboardRegister : vimState.register()),
+    setRegister: setVimRegister,
     submit,
     scroll(action) {
       if (action === "line-down") command.trigger("session.line.down")
@@ -453,7 +541,7 @@ export function Prompt(props: PromptProps) {
     },
     copyYank() {
       const reg = props.copy?.yank()
-      if (reg) vimState.setRegister(reg)
+      if (reg) setVimRegister(reg, true)
     },
     copyYankLine() {
       const reg = props.copy?.yankLine()
@@ -473,6 +561,12 @@ export function Prompt(props: PromptProps) {
     },
     copyWordPrev(big) {
       return props.copy?.wordPrev(big) ?? false
+    },
+    copyNextParagraph() {
+      return props.copy?.nextParagraph() ?? false
+    },
+    copyPreviousParagraph() {
+      return props.copy?.previousParagraph() ?? false
     },
     copyText() {
       return props.copy?.text() ?? ""
@@ -583,6 +677,17 @@ export function Prompt(props: PromptProps) {
           const handled = await submit()
           if (!handled) return
 
+          dialog.clear()
+        },
+      },
+      {
+        title: "Copy prompt selection",
+        value: "prompt.copy_selection",
+        keybind: "prompt_copy_selection",
+        category: "Prompt",
+        enabled: () => !!promptSelectionText(),
+        onSelect: async (dialog) => {
+          if (!(await copyPromptSelection())) return
           dialog.clear()
         },
       },
@@ -1107,6 +1212,37 @@ export function Prompt(props: PromptProps) {
     // Capture mode before it gets reset
     const currentMode = store.mode
     const variant = local.model.variant.current()
+    const editorSelection = fileContextEnabled() ? editor.selection() : undefined
+    const editorParts = editorSelection
+      ? [
+          {
+            id: PartID.ascending(),
+            type: "text" as const,
+            text: (() => {
+              const start = editorSelection.selection.start
+              const end = editorSelection.selection.end
+
+              let text = ""
+              if (start.line === end.line && start.character === end.character) {
+                text = `Note: The user opened the file "${editorSelection.filePath}".`
+              } else if (start.line === end.line) {
+                text = `Note: The user selected line ${start.line + 1} from "${editorSelection.filePath}". \`\`\`${editorSelection.text}\`\`\`\n\n`
+              } else {
+                text = `Note: The user selected lines ${start.line + 1} to ${end.line + 1} from "${editorSelection.filePath}". \`\`\`${editorSelection.text}\`\`\`\n\n`
+              }
+
+              return `<system-reminder>${text} This may or may not be relevant to the current task.</system-reminder>\n`
+            })(),
+            synthetic: true,
+            metadata: {
+              kind: "editor_context",
+              source: editorSelection.source ?? "editor",
+              filePath: editorSelection.filePath,
+              selection: editorSelection.selection,
+            },
+          },
+        ]
+      : []
 
     if (store.mode === "shell") {
       void sdk.client.session.shell({
@@ -1159,6 +1295,7 @@ export function Prompt(props: PromptProps) {
           model: selectedModel,
           variant,
           parts: [
+            ...editorParts,
             {
               id: PartID.ascending(),
               type: "text",
@@ -1168,6 +1305,7 @@ export function Prompt(props: PromptProps) {
           ],
         })
         .catch(() => {})
+      editor.clearSelection()
     }
     vimState.clearPending()
     history.append({
@@ -1345,6 +1483,37 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  function isInsertIndicator(indicator: string) {
+    return indicator === "-- INSERT --"
+  }
+
+  function isVisualIndicator(indicator: string) {
+    return ["-- VISUAL --", "-- VISUAL LINE --", "-- V-COPY --", "-- VL-COPY --"].includes(indicator)
+  }
+
+  function VimIndicator() {
+    return (
+      <Show when={vimIndicator()}>
+        {(indicator) => (
+          <text
+            fg={
+              vimState.pending()
+                ? theme.textMuted
+                : isInsertIndicator(indicator())
+                  ? local.agent.color(local.agent.current()?.name ?? "build")
+                  : isVisualIndicator(indicator())
+                    ? theme.text
+                    : theme.textMuted
+            }
+            attributes={vimState.pending() || isVisualIndicator(indicator()) ? TextAttributes.BOLD : undefined}
+          >
+            {indicator()}
+          </text>
+        )}
+      </Show>
+    )
+  }
+
   return (
     <>
       <Autocomplete
@@ -1415,6 +1584,11 @@ export function Prompt(props: PromptProps) {
                     e.preventDefault()
                     return
                   }
+                  if (keybind.match("input_force_submit", e)) {
+                    e.preventDefault()
+                    void submit()
+                    return
+                  }
                   // In copy mode, forward all keys to vim handler
                   if (vimState.isCopy()) {
                     const active = vimState.isCopy()
@@ -1469,7 +1643,7 @@ export function Prompt(props: PromptProps) {
                     }
                   }
                   if (e.name === "!" && input.visualCursor.offset === 0) {
-                    setStore("placeholder", Math.floor(Math.random() * SHELL_PLACEHOLDERS.length))
+                    setStore("placeholder", randomIndex(shell().length))
                     setStore("mode", "shell")
                     e.preventDefault()
                     return
@@ -1484,6 +1658,12 @@ export function Prompt(props: PromptProps) {
                   }
                   if (store.mode === "normal") autocomplete.onKeyDown(e)
                   if (e.defaultPrevented) return
+                  if (store.mode === "normal" && shouldSyncVimRegister(e)) {
+                    e.preventDefault()
+                    await syncVimRegisterFromClipboard()
+                    vim.handleKey(e)
+                    return
+                  }
                   if (store.mode === "normal" && vim.handleKey(e)) return
                   if (!autocomplete.visible) {
                     if (
@@ -1736,43 +1916,7 @@ export function Prompt(props: PromptProps) {
             when={status().type !== "idle"}
             fallback={
               <box flexDirection="row" gap={1}>
-                <Show when={vimIndicator()}>
-                  {(indicator) => (
-                    <text
-                      fg={
-                        vimState.pending()
-                          ? theme.textMuted
-                          : indicator() === "INSERT" || indicator() === "-- INSERT --"
-                            ? local.agent.color(local.agent.current()?.name ?? "build")
-                            : indicator() === "VISUAL" ||
-                                indicator() === "-- VISUAL --" ||
-                                indicator() === "V-LINE" ||
-                                indicator() === "-- VISUAL LINE --" ||
-                                indicator() === "V-COPY" ||
-                                indicator() === "-- V-COPY --" ||
-                                indicator() === "VL-COPY" ||
-                                indicator() === "-- VL-COPY --"
-                              ? theme.text
-                              : theme.textMuted
-                      }
-                      attributes={
-                        vimState.pending() ||
-                        indicator() === "VISUAL" ||
-                        indicator() === "-- VISUAL --" ||
-                        indicator() === "V-LINE" ||
-                        indicator() === "-- VISUAL LINE --" ||
-                        indicator() === "V-COPY" ||
-                        indicator() === "-- V-COPY --" ||
-                        indicator() === "VL-COPY" ||
-                        indicator() === "-- VL-COPY --"
-                          ? TextAttributes.BOLD
-                          : undefined
-                      }
-                    >
-                      {indicator()}
-                    </text>
-                  )}
-                </Show>
+                <VimIndicator />
                 {props.hint ?? <text />}
               </box>
             }
@@ -1784,6 +1928,7 @@ export function Prompt(props: PromptProps) {
               justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
             >
               <box flexShrink={0} flexDirection="row" gap={1}>
+                <VimIndicator />
                 <box marginLeft={1}>
                   <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
                     <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
@@ -1858,6 +2003,7 @@ export function Prompt(props: PromptProps) {
           </Show>
           <Show when={status().type !== "retry" && !mini()}>
             <box gap={2} flexDirection="row">
+              <Show when={editorFileLabelDisplay()}>{(file) => <text fg={theme.secondary}>{file()}</text>}</Show>
               <Switch>
                 <Match when={store.mode === "normal"}>
                   <Show when={local.model.variant.list().length > 0}>
