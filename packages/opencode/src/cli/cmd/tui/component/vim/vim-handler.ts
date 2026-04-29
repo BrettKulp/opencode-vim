@@ -949,8 +949,41 @@ export function createVimHandler(input: {
   }
 
   function copy(event: VimEvent, key: string): boolean {
-    if (key === "q") {
+
+    if (key === "y") {
+      // If in visual mode, yank selection and exit (original y behavior)
+      if (input.copyIsVisual?.()) {
+        input.copyYank?.()
+        input.state.setMode("normal")
+        event.preventDefault()
+        return true
+      }
+      // Not in visual mode - handle yy for yanking current line
+      if (input.state.pending() === "y") {
+        input.state.clearPending()
+        input.copyYankLine?.()
+        input.state.setMode("normal")
+        input.copyExit?.()
+        event.preventDefault()
+        return true
+      }
+      input.state.setPending("y")
+      event.preventDefault()
+      return true
+    }
+
+    const pending = input.state.pending()
+    if (pending === "y") {
       input.state.clearPending()
+    }
+
+    if (key === "return") {
+      input.copyCopy?.()
+      input.state.setMode("normal")
+      event.preventDefault()
+      return true
+    }
+    if (key === "q") {
       input.state.setMode("normal")
       event.preventDefault()
       return true
@@ -962,7 +995,6 @@ export function createVimHandler(input: {
         event.preventDefault()
         return true
       }
-      input.state.clearPending()
       input.state.setMode("normal")
       event.preventDefault()
       return true
@@ -1014,39 +1046,6 @@ export function createVimHandler(input: {
       return true
     }
 
-    if (key === "y") {
-      // If in visual mode, yank selection and exit (original y behavior)
-      if (input.copyIsVisual?.()) {
-        input.copyYank?.()
-        input.state.setMode("normal")
-        event.preventDefault()
-        return true
-      }
-      // Not in visual mode - handle yy for yanking current line
-      if (input.state.pending() === "y") {
-        input.state.clearPending()
-        input.copyYankLine?.()
-        input.state.setMode("normal")
-        input.copyExit?.()
-        event.preventDefault()
-        return true
-      }
-      input.state.setPending("y")
-      event.preventDefault()
-      return true
-    }
-
-    if (key === "return") {
-      input.copyCopy?.()
-      input.state.setMode("normal")
-      event.preventDefault()
-      return true
-    }
-
-    const pending = input.state.pending()
-    if (pending === "y") {
-      input.state.clearPending()
-    }
     if (pending === "f" || pending === "F" || pending === "t" || pending === "T") {
       if (key.length === 1) {
         const forward = pending === "f" || pending === "t"

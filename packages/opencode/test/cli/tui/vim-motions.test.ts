@@ -4391,6 +4391,23 @@ describe("copy mode", () => {
     expect(ctx.state.mode()).toBe("normal")
   })
 
+  test("y H y in copy mode should not trigger yy ", () => {
+    const ctx  = createHandler("abc", { mode: "copy"})
+
+    ctx.handler.handleKey(createEvent("y").event)
+    expect(ctx.state.pending()).toBe("y")
+
+    // H should clear pending y 
+    ctx.handler.handleKey(createEvent("H").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyJumps).toContain("high")
+
+    // second y starts pending y and does not trigger yy
+    ctx.handler.handleKey(createEvent("y").event)
+    expect(ctx.state.pending()).toBe("y")
+    expect(ctx.copyYankLines()).toBe(0)
+  })
+
   test("return copies selection to clipboard path and exits copy mode", () => {
     const ctx = createHandler("abc", { mode: "copy", copy: { isVisual: true } })
 
