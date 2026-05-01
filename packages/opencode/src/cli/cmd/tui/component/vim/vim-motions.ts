@@ -3,6 +3,7 @@ import type { VimRegister } from "./vim-state"
 
 export type VimSpan = { start: number; end: number }
 export type VimCopyRow = { col: number }
+export type VimWantedColumn = number | "end"
 
 function lineStart(text: string, offset: number) {
   if (offset <= 0) return 0
@@ -86,22 +87,28 @@ function previousParagraphTarget(text: string, cursor: number): number {
   return 0
 }
 
-function moveUp(text: string, offset: number) {
-  const currentStart = lineStart(text, offset)
+function lineColumn(text: string, offset: number) {
+  return offset - lineStart(text, offset)
+}
+
+function moveUp(text: string, offset: number, column: VimWantedColumn = lineColumn(text, offset)) {
   const targetStart = prevLineStart(text, offset)
   if (targetStart === undefined) return offset
   const targetLast = lineLast(text, targetStart)
-  const col = offset - currentStart
+  const col = column === "end" ? targetLast - targetStart : column
   return Math.min(targetStart + col, targetLast)
 }
 
-function moveDown(text: string, offset: number) {
-  const currentStart = lineStart(text, offset)
+function moveDown(text: string, offset: number, column: VimWantedColumn = lineColumn(text, offset)) {
   const targetStart = nextLineStart(text, offset)
   if (targetStart === undefined) return offset
   const targetLast = lineLast(text, targetStart)
-  const col = offset - currentStart
+  const col = column === "end" ? targetLast - targetStart : column
   return Math.min(targetStart + col, targetLast)
+}
+
+export function getLineColumn(textarea: TextareaRenderable) {
+  return lineColumn(textarea.plainText, textarea.cursorOffset)
 }
 
 export function moveLeft(textarea: TextareaRenderable) {
@@ -137,14 +144,14 @@ export function moveRight(textarea: TextareaRenderable) {
   textarea.cursorOffset = Math.min(last, textarea.cursorOffset + 1)
 }
 
-export function moveLineUp(textarea: TextareaRenderable) {
+export function moveLineUp(textarea: TextareaRenderable, column?: VimWantedColumn) {
   const text = textarea.plainText
-  textarea.cursorOffset = moveUp(text, textarea.cursorOffset)
+  textarea.cursorOffset = moveUp(text, textarea.cursorOffset, column)
 }
 
-export function moveLineDown(textarea: TextareaRenderable) {
+export function moveLineDown(textarea: TextareaRenderable, column?: VimWantedColumn) {
   const text = textarea.plainText
-  textarea.cursorOffset = moveDown(text, textarea.cursorOffset)
+  textarea.cursorOffset = moveDown(text, textarea.cursorOffset, column)
 }
 
 export function movePreviousParagraph(textarea: TextareaRenderable) {
@@ -239,10 +246,7 @@ function nextCharwiseSpan(text: string, cursor: number, c: NextClassification): 
   return { start: cursor, end }
 }
 
-export function nextParagraphOperation(
-  textarea: TextareaRenderable,
-  operation: ParagraphOperation,
-): ParagraphResult {
+export function nextParagraphOperation(textarea: TextareaRenderable, operation: ParagraphOperation): ParagraphResult {
   const text = textarea.plainText
   const cursor = textarea.cursorOffset
   if (text.length === 0) return { span: null, register: null }
@@ -319,8 +323,7 @@ export function wordEnd(text: string, offset: number, big: boolean) {
   if (pos >= text.length) pos = text.length - 1
 
   const startClass = wordClass(text[pos], big)
-  const atRunEnd =
-    startClass === "blank" || pos + 1 >= text.length || wordClass(text[pos + 1], big) !== startClass
+  const atRunEnd = startClass === "blank" || pos + 1 >= text.length || wordClass(text[pos + 1], big) !== startClass
 
   if (atRunEnd) {
     pos++
@@ -771,7 +774,7 @@ export function syncSelection(textarea: TextareaRenderable, anchor: number, line
   textarea.cursorOffset = forward ? hi : lo
   ta.updateSelectionForMovement(true, false)
   textarea.cursorOffset = cursor
-  textarea.editorView.setSelection(lo, hi)
+  textarea.editorView.setSelection(lo, hi, textarea.selectionBg, textarea.selectionFg)
 }
 
 export function clearSelection(textarea: TextareaRenderable) {

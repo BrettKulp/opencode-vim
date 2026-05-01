@@ -10,30 +10,20 @@ import {
   dim,
   fg,
 } from "@opentui/core"
-import {
-  createEffect,
-  createMemo,
-  onMount,
-  createSignal,
-  onCleanup,
-  on,
-  Show,
-  Switch,
-  Match,
-} from "solid-js"
+import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
 import "opentui-spinner/solid"
 import path from "path"
 import { fileURLToPath } from "url"
 import { Filesystem } from "@/util/filesystem"
 import { useLocal } from "@tui/context/local"
-import { tint, useTheme } from "@tui/context/theme"
+import { selectedForeground, tint, useTheme } from "@tui/context/theme"
 import { EmptyBorder, SplitBorder } from "@tui/component/border"
 import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { useProject } from "@tui/context/project"
 import { useSync } from "@tui/context/sync"
 import { useEvent } from "@tui/context/event"
-import { useEditorContext } from "@tui/context/editor"
+import { editorSelectionKey, useEditorContext, type EditorSelection } from "@tui/context/editor"
 import { MessageID, PartID } from "@/session/schema"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { useKeybind } from "@tui/context/keybind"
@@ -139,6 +129,32 @@ function fadeColor(color: RGBA, alpha: number) {
   return RGBA.fromValues(color.r, color.g, color.b, color.a * alpha)
 }
 
+function hasEditorRangeSelection(selection: EditorSelection["ranges"][number]) {
+  return (
+    selection.selection.start.line !== selection.selection.end.line ||
+    selection.selection.start.character !== selection.selection.end.character
+  )
+}
+
+function getEditorRangeLabel(selection: EditorSelection["ranges"][number]) {
+  if (!hasEditorRangeSelection(selection)) return
+  if (selection.selection.start.line === selection.selection.end.line) return `#${selection.selection.start.line}`
+  return `#${selection.selection.start.line}-${selection.selection.end.line}`
+}
+
+function formatEditorContext(selection: EditorSelection) {
+  const selected = selection.ranges.filter(hasEditorRangeSelection)
+  if (selected.length === 0)
+    return `<system-reminder>Note: The user opened the file "${selection.filePath}". This may or may not be relevant to the current task.</system-reminder>\n`
+
+  const ranges = selected.map((range, index) => {
+    const prefix = selected.length > 1 ? `Selection ${index + 1}: ` : ""
+    return `Note: The user selected ${prefix}${getEditorRangeLabel(range)} from "${selection.filePath}". \`\`\`${range.text}\`\`\`\n\n`
+  })
+
+  return `<system-reminder>${ranges.join("\n")} This may or may not be relevant to the current task.</system-reminder>\n`
+}
+
 let stashed: { prompt: PromptInfo; cursor: number } | undefined
 
 export function Prompt(props: PromptProps) {
@@ -171,13 +187,21 @@ export function Prompt(props: PromptProps) {
   const list = createMemo(() => props.placeholders?.normal ?? [])
   const shell = createMemo(() => props.placeholders?.shell ?? [])
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
-  const editorPath = createMemo(() => (fileContextEnabled() ? editor.selection()?.filePath : undefined))
-  const editorSelectionLabel = createMemo(() => {
-    const selection = fileContextEnabled() ? editor.selection()?.selection : undefined
+  const [dismissedEditorSelectionKey, setDismissedEditorSelectionKey] = createSignal<string>()
+  const editorContext = createMemo(() => {
+    const selection = fileContextEnabled() ? editor.selection() : undefined
     if (!selection) return
-    if (selection.start.line === selection.end.line && selection.start.character === selection.end.character) return
-    if (selection.start.line === selection.end.line) return `#${selection.start.line}`
-    return `#${selection.start.line}-${selection.end.line}`
+    return editorSelectionKey(selection) === dismissedEditorSelectionKey() ? undefined : selection
+  })
+  const editorPath = createMemo(() => editorContext()?.filePath)
+  const editorSelectionLabel = createMemo(() => {
+    const ranges = editorContext()?.ranges
+    if (!ranges) return
+    const first = ranges.find(hasEditorRangeSelection) ?? ranges[0]
+    if (!first) return
+    return [getEditorRangeLabel(first), ranges.length > 1 ? `+${ranges.length - 1}` : undefined]
+      .filter(Boolean)
+      .join(" ")
   })
   const editorFileLabel = createMemo(() => {
     const value = editorPath()
@@ -193,6 +217,8 @@ export function Prompt(props: PromptProps) {
     if (!file) return
     return Locale.truncateMiddle(file, Math.max(12, Math.min(48, Math.floor(dimensions().width / 3))))
   })
+  const [editorContextHover, setEditorContextHover] = createSignal(false)
+  let lastSubmittedEditorSelectionKey: string | undefined
   const [auto, setAuto] = createSignal<AutocompleteRef>()
   const maxHeight = createMemo(() => cfg?.prompt_max_height ?? 6)
   const showScrollbar = createMemo(() => cfg?.prompt_scrollbar !== false)
@@ -267,6 +293,11 @@ export function Prompt(props: PromptProps) {
     }
   }
 
+  function dismissEditorContext() {
+    setDismissedEditorSelectionKey(editorSelectionKey(editorContext()))
+    editor.clearSelection()
+  }
+
   const textareaKeybindings = useTextareaKeybindings()
 
   const fileStyleId = syntax().getStyleId("extmark.file")!
@@ -291,10 +322,13 @@ export function Prompt(props: PromptProps) {
     if (props.disabled || vimState.isCopy()) {
       input.cursorColor = theme.backgroundElement
       input.showCursor = false
-    } else {
-      input.cursorColor = theme.text
-      input.showCursor = true
+      return
     }
+    const visual = vimState.isVisual()
+    input.cursorColor = theme.text
+    input.showCursor = !visual
+    input.selectionBg = visual ? theme.secondary : undefined
+    input.selectionFg = visual ? selectedForeground(theme, theme.secondary) : undefined
   })
 
   createEffect((prev: boolean | undefined) => {
@@ -667,6 +701,16 @@ export function Prompt(props: PromptProps) {
         enabled: () => !!promptSelectionText(),
         onSelect: async (dialog) => {
           if (!(await copyPromptSelection())) return
+          dialog.clear()
+        },
+      },
+      {
+        title: "Remove editor context",
+        value: "prompt.editor_context.clear",
+        category: "Prompt",
+        enabled: Boolean(editorContext()),
+        onSelect: (dialog) => {
+          dismissEditorContext()
           dialog.clear()
         },
       },
@@ -1191,37 +1235,25 @@ export function Prompt(props: PromptProps) {
     // Capture mode before it gets reset
     const currentMode = store.mode
     const variant = local.model.variant.current()
-    const editorSelection = fileContextEnabled() ? editor.selection() : undefined
-    const editorParts = editorSelection
-      ? [
-          {
-            id: PartID.ascending(),
-            type: "text" as const,
-            text: (() => {
-              const start = editorSelection.selection.start
-              const end = editorSelection.selection.end
-
-              let text = ""
-              if (start.line === end.line && start.character === end.character) {
-                text = `Note: The user opened the file "${editorSelection.filePath}".`
-              } else if (start.line === end.line) {
-                text = `Note: The user selected line ${start.line + 1} from "${editorSelection.filePath}". \`\`\`${editorSelection.text}\`\`\`\n\n`
-              } else {
-                text = `Note: The user selected lines ${start.line + 1} to ${end.line + 1} from "${editorSelection.filePath}". \`\`\`${editorSelection.text}\`\`\`\n\n`
-              }
-
-              return `<system-reminder>${text} This may or may not be relevant to the current task.</system-reminder>\n`
-            })(),
-            synthetic: true,
-            metadata: {
-              kind: "editor_context",
-              source: editorSelection.source ?? "editor",
-              filePath: editorSelection.filePath,
-              selection: editorSelection.selection,
+    const editorSelection = editorContext()
+    const currentEditorSelectionKey = editorSelectionKey(editorSelection)
+    const editorParts =
+      editorSelection && currentEditorSelectionKey !== lastSubmittedEditorSelectionKey
+        ? [
+            {
+              id: PartID.ascending(),
+              type: "text" as const,
+              text: formatEditorContext(editorSelection),
+              synthetic: true,
+              metadata: {
+                kind: "editor_context",
+                source: editorSelection.source ?? "editor",
+                filePath: editorSelection.filePath,
+                ranges: editorSelection.ranges,
+              },
             },
-          },
-        ]
-      : []
+          ]
+        : []
 
     if (store.mode === "shell") {
       void sdk.client.session.shell({
@@ -1284,7 +1316,7 @@ export function Prompt(props: PromptProps) {
           ],
         })
         .catch(() => {})
-      editor.clearSelection()
+      lastSubmittedEditorSelectionKey = currentEditorSelectionKey
     }
     vimState.clearPending()
     history.append({
@@ -1731,7 +1763,7 @@ export function Prompt(props: PromptProps) {
                   const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
                   if (
                     (lineCount >= 3 || pastedContent.length > 150) &&
-                    !sync.data.config.experimental?.disable_paste_summary
+                    kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary)
                   ) {
                     pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
                     return
@@ -1763,18 +1795,30 @@ export function Prompt(props: PromptProps) {
                         input.scrollY,
                         input.height,
                       )
-                      if (!rows.length) return
-                      const bg = input.selectionBg ?? input.textColor
-                      const fg =
-                        input.selectionFg ??
-                        (input.backgroundColor.a > 0 ? input.backgroundColor : RGBA.fromInts(0, 0, 0))
-                      rows.forEach((row) => {
-                        buffer.setCell(input.x, input.y + row, " ", fg, bg)
-                      })
+                      if (rows.length) {
+                        const bg = input.selectionBg ?? input.textColor
+                        const fg =
+                          input.selectionFg ??
+                          (input.backgroundColor.a > 0 ? input.backgroundColor : RGBA.fromInts(0, 0, 0))
+                        rows.forEach((row) => {
+                          buffer.setCell(input.x, input.y + row, " ", fg, bg)
+                        })
+                      }
+                      if (input.visualCursor.visualRow < 0 || input.visualCursor.visualRow >= input.height) return
+                      if (input.visualCursor.visualCol < 0 || input.visualCursor.visualCol >= input.width) return
+                      // recolor the cursor cell in place; setCell would clobber the underlying glyph
+                      const cursorOffset =
+                        ((input.y + input.visualCursor.visualRow) * buffer.width +
+                          input.x +
+                          input.visualCursor.visualCol) *
+                        4
+                      buffer.buffers.fg.set(selectedForeground(theme, theme.text).buffer.subarray(0, 4), cursorOffset)
+                      buffer.buffers.bg.set(theme.text.buffer.subarray(0, 4), cursorOffset)
                     }
                   }
                   props.ref?.(ref)
                   setTimeout(() => {
+                    // setTimeout is a workaround and needs to be addressed properly
                     if (!input || input.isDestroyed) return
                     input.cursorColor = theme.text
                     syncScrollbar()
@@ -1976,7 +2020,18 @@ export function Prompt(props: PromptProps) {
           </Show>
           <Show when={status().type !== "retry" && !mini()}>
             <box gap={2} flexDirection="row">
-              <Show when={editorFileLabelDisplay()}>{(file) => <text fg={theme.secondary}>{file()}</text>}</Show>
+              <Show when={editorFileLabelDisplay()}>
+                {(file) => (
+                  <text
+                    fg={theme.secondary}
+                    onMouseOver={() => setEditorContextHover(true)}
+                    onMouseOut={() => setEditorContextHover(false)}
+                    onMouseUp={dismissEditorContext}
+                  >
+                    {editorContextHover() ? `x ${file()}` : file()}
+                  </text>
+                )}
+              </Show>
               <Switch>
                 <Match when={store.mode === "normal"}>
                   <Show when={local.model.variant.list().length > 0}>
