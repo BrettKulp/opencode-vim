@@ -4554,7 +4554,7 @@ describe("copy mode", () => {
     ctx.handler.handleKey(createEvent("y").event)
     expect(ctx.state.pending()).toBe("y")
 
-    // H should clear pending y 
+    // H should clear pending y
     ctx.handler.handleKey(createEvent("H").event)
     expect(ctx.state.pending()).toBe("")
     expect(ctx.copyJumps).toContain("high")
