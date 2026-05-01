@@ -962,8 +962,10 @@ export function createVimHandler(input: {
       if (input.state.pending() === "y") {
         input.state.clearPending()
         input.copyYankLine?.()
-        input.state.setMode("normal")
-        input.copyExit?.()
+        setTimeout(() => {
+          input.state.setMode("normal")
+          input.copyExit?.()
+        }, 150)
         event.preventDefault()
         return true
       }
