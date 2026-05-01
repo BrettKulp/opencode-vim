@@ -653,10 +653,7 @@ export function createCopyMode(input: {
         .map((c) => [c.id, c]),
     )
     const h = { idx: s.idx, col: s.col }
-    const start = a.idx <= h.idx ? a : h
-    const end = a.idx <= h.idx ? h : a
     const { start, end } = orderEndpoints(s.anchor, h)
-    const out = new Map<string, CopyHighlight[]>()
     const addHighlight = (row: CopyRow, min: number, text: string, left: number, right: number) => {
       if (left > right) return
       const entry = {
@@ -669,7 +666,7 @@ export function createCopyMode(input: {
       if (arr) arr.push(entry)
       else out.set(row.id, [entry])
     }
-    
+
     for (let i = start.idx; i <= end.idx; i++) {
       const r = list[i]
       if (!r) continue
