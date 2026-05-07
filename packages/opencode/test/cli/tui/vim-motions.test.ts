@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import type { TextareaRenderable } from "@opentui/core"
-import { createSignal } from "solid-js"
+import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
+import type { Part } from "@opencode-ai/sdk/v2"
+import { createRoot, createSignal } from "solid-js"
 import { createVimHandler } from "../../../src/cli/cmd/tui/component/vim/vim-handler"
 import { createVimState } from "../../../src/cli/cmd/tui/component/vim/vim-state"
 import type { VimScroll } from "../../../src/cli/cmd/tui/component/vim/vim-scroll"
 import { vimScroll } from "../../../src/cli/cmd/tui/component/vim/vim-scroll"
+import { createCopyMode } from "../../../src/cli/cmd/tui/routes/session/copy-mode"
 import type { VimJump } from "../../../src/cli/cmd/tui/component/vim/vim-motion-jump"
 import {
   copyNextParagraph,
   copyPreviousParagraph,
+  copyWordEnd,
   copyWordNext,
   copyWordPrev,
   deleteSelection,
@@ -163,7 +166,7 @@ function createHandler(
   const [mode, setMode] = createSignal<"normal" | "insert" | "replace" | "visual" | "visual-line" | "copy">(
     options?.mode ?? "normal",
   )
-  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y">("")
+  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "r" | "vr">("")
   const [lastFind, setLastFind] = createSignal<{ char: string; forward: boolean; till: boolean } | null>(null)
   const [register, setRegister] = createSignal<{ text: string; linewise: boolean } | null>(null)
   const [anchor, setAnchor] = createSignal<number | null>(null)
@@ -186,9 +189,12 @@ function createHandler(
   const copyVisualCalls: Array<"char" | "line"> = []
   const copyScrollCalls: Array<"center" | "top" | "bottom"> = []
   let copyYanks = 0
+  let copyYankLines = 0
   let copyCopies = 0
   let copyExitVisuals = 0
   const copyExits: Array<boolean | undefined> = []
+  let copyExitPreserveScrolls = 0
+  let copyFocusInputs = 0
 
   function clearPending() {
     setPending("")
@@ -309,12 +315,24 @@ function createHandler(
       copyExitVisuals++
       setCopyVisual(undefined)
     },
+    copyExit(scrollToBottom) {
+      copyExits.push(scrollToBottom)
+      setCopyVisual(undefined)
+    },
+    copyExitPreserveScroll() {
+      copyExitPreserveScrolls++
+      setCopyVisual(undefined)
+    },
+    copyFocusInput() {
+      copyFocusInputs++
+    },
     copyYank() {
       copyYanks++
       state.setRegister({ text: options?.copy?.text ?? "picked", linewise: false })
     },
-    copyExit(scrollToBottom) {
-      copyExits.push(scrollToBottom)
+    copyYankLine() {
+      copyYankLines++
+      state.setRegister({ text: options?.copy?.text ?? "picked line", linewise: false })
     },
     copyCopy() {
       copyCopies++
@@ -339,6 +357,14 @@ function createHandler(
       const moved = prev.idx !== copyIdx() || prev.col !== copyCol()
       setCopyIdx(prev.idx)
       setCopyCol(prev.col)
+      return moved
+    },
+    copyWordEnd(big) {
+      if (!copyRows) return false
+      const next = copyWordEnd(copyRows, (idx) => options?.copy?.texts?.[idx] ?? "", copyIdx(), copyCol(), big)
+      const moved = next.idx !== copyIdx() || next.col !== copyCol()
+      setCopyIdx(next.idx)
+      setCopyCol(next.col)
       return moved
     },
     copyNextParagraph() {
@@ -398,9 +424,13 @@ function createHandler(
     copyVisualCalls,
     copyScrollCalls,
     copyYanks: () => copyYanks,
+    copyYankLines: () => copyYankLines,
     copyCopies: () => copyCopies,
     copyExitVisuals: () => copyExitVisuals,
-    copyExits,
+    copyExits: () => copyExits.length,
+    copyExitArgs: copyExits,
+    copyExitPreserveScrolls: () => copyExitPreserveScrolls,
+    copyFocusInputs: () => copyFocusInputs,
     copyCol,
     copyIdx,
     meta,
@@ -476,6 +506,77 @@ describe("vim motion handler", () => {
 
     ctx.handler.handleKey(createEvent("k").event)
     expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 3, 0))
+  })
+
+  test("j and k preserve desired column across short lines", () => {
+    const text = "abcdef\nx\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 5)
+
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 1, 0))
+
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 5))
+
+    ctx.handler.handleKey(createEvent("k").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 1, 0))
+
+    ctx.handler.handleKey(createEvent("k").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 0, 5))
+  })
+
+  test("arrow up and down preserve desired column across short lines", () => {
+    const text = "abcdef\nx\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 4)
+
+    ctx.handler.handleKey(createEvent("down").event)
+    ctx.handler.handleKey(createEvent("down").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 4))
+
+    ctx.handler.handleKey(createEvent("up").event)
+    ctx.handler.handleKey(createEvent("up").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 0, 4))
+  })
+
+  test("non-vertical motion resets desired column", () => {
+    const text = "abcdef\nx\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 5)
+
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("h").event)
+    ctx.handler.handleKey(createEvent("j").event)
+
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 0))
+  })
+
+  test("shifted j join resets desired column", () => {
+    const text = "abcdef\nx\nabc\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 5)
+
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("j", { shift: true }).event)
+    ctx.handler.handleKey(createEvent("j").event)
+
+    expect(ctx.textarea.plainText).toBe("abcdef\nx abc\nabcdef")
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(ctx.textarea.plainText, 2, 1))
+  })
+
+  test("$ makes vertical movement stick to line end", () => {
+    const text = "abc\ndefgh\nxy"
+    const ctx = createHandler(text)
+
+    ctx.handler.handleKey(createEvent("$").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 0, 2))
+
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 1, 4))
+
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 1))
   })
 
   test("supports word and big-word key shapes", () => {
@@ -1065,7 +1166,7 @@ describe("vim motion handler", () => {
     expect(ctx.textarea.cursorOffset).toBe(1)
   })
 
-  test("escape from insert leaves cursor inside line content alone", () => {
+  test("escape from empty insert moves cursor back like vim", () => {
     const ctx = createHandler("abc")
     ctx.textarea.cursorOffset = 1
     expect(ctx.handler.handleKey(createEvent("i").event)).toBe(true)
@@ -1073,7 +1174,7 @@ describe("vim motion handler", () => {
 
     expect(ctx.handler.handleKey(createEvent("escape").event)).toBe(true)
     expect(ctx.state.mode()).toBe("normal")
-    expect(ctx.textarea.cursorOffset).toBe(1)
+    expect(ctx.textarea.cursorOffset).toBe(0)
   })
 
   test("o opens line below and enters insert", () => {
@@ -1147,11 +1248,27 @@ describe("vim motion handler", () => {
     expect(a.handler.handleKey(x.event)).toBe(true)
     expect(x.prevented()).toBe(true)
     expect(a.textarea.plainText).toBe("ac")
+    expect(a.textarea.cursorOffset).toBe(1)
 
     const b = createHandler("ab\ncd")
     b.textarea.cursorOffset = 2
     expect(b.handler.handleKey(createEvent("x").event)).toBe(true)
     expect(b.textarea.plainText).toBe("ab\ncd")
+    expect(b.textarea.cursorOffset).toBe(2)
+  })
+
+  test("x on last char moves left like vim", () => {
+    const a = createHandler("abc")
+    a.textarea.cursorOffset = 2
+    expect(a.handler.handleKey(createEvent("x").event)).toBe(true)
+    expect(a.textarea.plainText).toBe("ab")
+    expect(a.textarea.cursorOffset).toBe(1)
+
+    const b = createHandler("ab\ncd")
+    b.textarea.cursorOffset = 1
+    expect(b.handler.handleKey(createEvent("x").event)).toBe(true)
+    expect(b.textarea.plainText).toBe("a\ncd")
+    expect(b.textarea.cursorOffset).toBe(0)
   })
 
   test("uses custom register setter", () => {
@@ -1422,6 +1539,7 @@ describe("vim motion handler", () => {
 
   test("insert mode only handles escape", () => {
     const ctx = createHandler("abc", { mode: "insert" })
+    ctx.textarea.cursorOffset = 2
 
     const w = createEvent("w")
     expect(ctx.handler.handleKey(w.event)).toBe(false)
@@ -1431,6 +1549,138 @@ describe("vim motion handler", () => {
     expect(ctx.handler.handleKey(esc.event)).toBe(true)
     expect(esc.prevented()).toBe(true)
     expect(ctx.state.mode()).toBe("normal")
+    expect(ctx.textarea.cursorOffset).toBe(1)
+  })
+
+  test("escape from insert mode moves cursor back like vim", () => {
+    const ctx = createHandler("abcd")
+    ctx.textarea.cursorOffset = 1
+
+    ctx.handler.handleKey(createEvent("i").event)
+    ctx.textarea.insertText("X")
+    ctx.textarea.insertText("Y")
+    ctx.handler.handleKey(createEvent("escape").event)
+
+    expect(ctx.textarea.plainText).toBe("aXYbcd")
+    expect(ctx.textarea.cursorOffset).toBe(2)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("escape from insert mode stays on inserted text at end of line", () => {
+    const ctx = createHandler("abcd")
+    ctx.textarea.cursorOffset = 3
+
+    ctx.handler.handleKey(createEvent("a").event)
+    ctx.textarea.insertText("X")
+    ctx.handler.handleKey(createEvent("escape").event)
+
+    expect(ctx.textarea.plainText).toBe("abcdX")
+    expect(ctx.textarea.cursorOffset).toBe(4)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("escape from insert mode stays on a new empty line", () => {
+    const ctx = createHandler("abc")
+    ctx.textarea.cursorOffset = 1
+
+    ctx.handler.handleKey(createEvent("o").event)
+    ctx.handler.handleKey(createEvent("escape").event)
+
+    expect(ctx.textarea.plainText).toBe("abc\n")
+    expect(ctx.textarea.cursorOffset).toBe(4)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("db after insert escape keeps the character under cursor like vim", () => {
+    const ctx = createHandler("")
+
+    ctx.handler.handleKey(createEvent("i").event)
+    ctx.textarea.insertText("word")
+    ctx.handler.handleKey(createEvent("escape").event)
+    expect(ctx.textarea.cursorOffset).toBe(3)
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("b").event)
+    expect(ctx.textarea.plainText).toBe("d")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+  })
+
+  test("r replaces one character and stays normal", () => {
+    const ctx = createHandler("abcd")
+    ctx.textarea.cursorOffset = 1
+
+    const start = createEvent("r")
+    expect(ctx.handler.handleKey(start.event)).toBe(true)
+    expect(start.prevented()).toBe(true)
+    expect(ctx.state.pending()).toBe("r")
+
+    const replacement = createEvent("X")
+    expect(ctx.handler.handleKey(replacement.event)).toBe(true)
+    expect(replacement.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("aXcd")
+    expect(ctx.textarea.cursorOffset).toBe(1)
+    expect(ctx.state.mode()).toBe("normal")
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("r replaces with space", () => {
+    const ctx = createHandler("abcd")
+    ctx.textarea.cursorOffset = 2
+
+    ctx.handler.handleKey(createEvent("r").event)
+    ctx.handler.handleKey(createEvent("space").event)
+
+    expect(ctx.textarea.plainText).toBe("ab d")
+    expect(ctx.textarea.cursorOffset).toBe(2)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("r replaces last character without moving left", () => {
+    const ctx = createHandler("abc")
+    ctx.textarea.cursorOffset = 2
+
+    ctx.handler.handleKey(createEvent("r").event)
+    ctx.handler.handleKey(createEvent("d").event)
+
+    expect(ctx.textarea.plainText).toBe("abd")
+    expect(ctx.textarea.cursorOffset).toBe(2)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("r return replaces character with newline and moves to next line", () => {
+    const ctx = createHandler("abcd")
+    ctx.textarea.cursorOffset = 1
+
+    ctx.handler.handleKey(createEvent("r").event)
+    ctx.handler.handleKey(createEvent("return").event)
+
+    expect(ctx.textarea.plainText).toBe("a\ncd")
+    expect(ctx.textarea.cursorOffset).toBe(2)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("r does not insert on empty line", () => {
+    const ctx = createHandler("ab\n\ncd")
+    ctx.textarea.cursorOffset = 3
+
+    ctx.handler.handleKey(createEvent("r").event)
+    ctx.handler.handleKey(createEvent("X").event)
+
+    expect(ctx.textarea.plainText).toBe("ab\n\ncd")
+    expect(ctx.textarea.cursorOffset).toBe(3)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("r replaces with uppercase characters before jump handling", () => {
+    const ctx = createHandler("abcd")
+    ctx.textarea.cursorOffset = 1
+
+    ctx.handler.handleKey(createEvent("r").event)
+    ctx.handler.handleKey(createEvent("G").event)
+
+    expect(ctx.textarea.plainText).toBe("aGcd")
+    expect(ctx.textarea.cursorOffset).toBe(1)
+    expect(ctx.jumpCalls).toEqual([])
   })
 
   test("R enters replace mode and escape exits", () => {
@@ -1477,6 +1727,17 @@ describe("vim motion handler", () => {
     expect(ctx.textarea.plainText).toBe("aXYd")
     expect(ctx.textarea.cursorOffset).toBe(3)
     expect(ctx.state.mode()).toBe("replace")
+  })
+
+  test("replace mode preserves shifted uppercase letters", () => {
+    const ctx = createHandler("abcd", { mode: "replace" })
+    ctx.textarea.cursorOffset = 1
+
+    const key = createEvent("x", { shift: true })
+    expect(ctx.handler.handleKey(key.event)).toBe(true)
+    expect(key.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("aXcd")
+    expect(ctx.textarea.cursorOffset).toBe(2)
   })
 
   test("replace mode overwrites with space key", () => {
@@ -2936,6 +3197,92 @@ describe("vim motion handler", () => {
     expect((ctx.textarea as any).editorView.getSelection()).toEqual({ start: 0, end: 7 })
   })
 
+  test("visual j preserves desired column across short lines", () => {
+    const text = "abcdef\nx\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 5)
+
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 1, 0))
+
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 5))
+    expect((ctx.textarea as any).editorView.getSelection()).toEqual({
+      start: rowColToOffset(text, 0, 5),
+      end: rowColToOffset(text, 2, 5) + 1,
+    })
+  })
+
+  test("visual arrow down preserves desired column across short lines", () => {
+    const text = "abcdef\nx\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 5)
+
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("down").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 1, 0))
+
+    ctx.handler.handleKey(createEvent("down").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 5))
+    expect((ctx.textarea as any).editorView.getSelection()).toEqual({
+      start: rowColToOffset(text, 0, 5),
+      end: rowColToOffset(text, 2, 5) + 1,
+    })
+
+    ctx.handler.handleKey(createEvent("up").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 1, 0))
+
+    ctx.handler.handleKey(createEvent("up").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 0, 5))
+  })
+
+  test("entering visual mode preserves desired column", () => {
+    const text = "abcdef\nx\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 5)
+
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("j").event)
+
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 5))
+    expect((ctx.textarea as any).editorView.getSelection()).toEqual({
+      start: rowColToOffset(text, 1, 0),
+      end: rowColToOffset(text, 2, 5) + 1,
+    })
+  })
+
+  test("entering visual-line mode preserves desired column", () => {
+    const text = "abcdef\nx\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 5)
+
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("V").event)
+    ctx.handler.handleKey(createEvent("j").event)
+
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 5))
+    expect((ctx.textarea as any).editorView.getSelection()).toEqual({
+      start: rowColToOffset(text, 1, 0),
+      end: text.length,
+    })
+  })
+
+  test("exiting visual mode with v preserves desired column", () => {
+    const text = "abcdef\nx\nabcdef"
+    const ctx = createHandler(text)
+    ctx.textarea.cursorOffset = rowColToOffset(text, 0, 5)
+
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("j").event)
+
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(text, 2, 5))
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
   test("v then escape exits visual mode", () => {
     const ctx = createHandler("hello world")
     ctx.textarea.cursorOffset = 2
@@ -3231,6 +3578,35 @@ describe("vim motion handler", () => {
     expect(ctx.textarea.cursorOffset).toBe(1)
     expect(ctx.state.mode()).toBe("normal")
     expect((ctx.textarea as any).editorView.getSelection()).toBe(null)
+  })
+
+  test("visual r replaces selection before jump handling", () => {
+    const ctx = createHandler("abcd\nefgh")
+    ctx.textarea.cursorOffset = 1
+
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("l").event)
+    ctx.handler.handleKey(createEvent("r").event)
+    ctx.handler.handleKey(createEvent("G").event)
+
+    expect(ctx.textarea.plainText).toBe("aGGd\nefgh")
+    expect(ctx.textarea.cursorOffset).toBe(1)
+    expect(ctx.jumpCalls).toEqual([])
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("visual r return inserts carriage returns without splitting lines", () => {
+    const ctx = createHandler("abcd")
+    ctx.textarea.cursorOffset = 1
+
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("l").event)
+    ctx.handler.handleKey(createEvent("r").event)
+    ctx.handler.handleKey(createEvent("return").event)
+
+    expect(ctx.textarea.plainText).toBe("a\r\rd")
+    expect(ctx.textarea.cursorOffset).toBe(1)
+    expect(ctx.state.mode()).toBe("normal")
   })
 
   test("visual mode with backward motion", () => {
@@ -3965,7 +4341,7 @@ describe("vim undo redo", () => {
 
     ctx.handler.handleKey(createEvent("u").event)
     expect(ctx.textarea.plainText).toBe("hello")
-    expect(ctx.textarea.cursorOffset).toBe(5)
+    expect(ctx.textarea.cursorOffset).toBe(4)
   })
 
   test("redo is cleared after a new edit", () => {
@@ -4093,6 +4469,124 @@ describe("vim scroll mapping", () => {
 })
 
 describe("copy mode", () => {
+  function createRenderedCopyMode(lines: string[], gutter = 4) {
+    const child = {
+      id: "text-part",
+      y: 0,
+      height: lines.length,
+      gutter: { calculateWidth: () => gutter },
+      getChildren: () => [
+        {
+          _y: 0,
+          plainText: lines.join("\n"),
+          lineInfo: {
+            lineSources: lines.map((_, i) => i),
+            lineStartCols: lines.map(() => 0),
+            lineWidthCols: lines.map((line) => Bun.stringWidth(line)),
+            lineWraps: lines.map(() => 0),
+          },
+        },
+      ],
+    }
+    const scroll = {
+      y: 0,
+      height: 10,
+      width: 120,
+      scrollHeight: lines.length,
+      getChildren: () => [child],
+      scrollBy() {},
+    } as unknown as ScrollBoxRenderable
+    const cm = createCopyMode({
+      scroll: () => scroll,
+      messages: () => [{ id: "message", role: "assistant" }],
+      parts: () => [{ id: "part", type: "text", text: lines.join("\n") }] as Part[],
+      thinking: () => false,
+      details: () => false,
+      session: () => "session",
+      toBottom() {},
+    })
+    cm.prompt.enter()
+    cm.prompt.jump("top")
+    return cm
+  }
+
+  test("highlights final wrapped row using its visual slice", () => {
+    const child = {
+      id: "text-part",
+      y: 0,
+      height: 3,
+      plainText: "abcdefghijklmnopqrstuvwxyz",
+      lineInfo: {
+        lineSources: [0, 0, 0],
+        lineStartCols: [0, 10, 20],
+        lineWidthCols: [10, 10, 6],
+        lineWraps: [1, 1, 0],
+      },
+    }
+    const scroll = {
+      y: 0,
+      height: 10,
+      width: 80,
+      scrollHeight: 3,
+      getChildren: () => [child],
+      scrollBy() {},
+    } as unknown as ScrollBoxRenderable
+    const cm = createCopyMode({
+      scroll: () => scroll,
+      messages: () => [{ id: "message", role: "assistant" }],
+      parts: () => [{ id: "part", type: "text", text: child.plainText }] as Part[],
+      thinking: () => false,
+      details: () => false,
+      session: () => "session",
+      toBottom() {},
+    })
+
+    cm.prompt.enter()
+    cm.prompt.visual("line")
+    cm.prompt.jump("top")
+
+    expect(cm.highlights().get("text-part")?.at(-1)).toMatchObject({ line: 2, text: "uvwxyz" })
+    expect(cm.prompt.yank()).toEqual({ text: "abcdefghij\nklmnopqrst\nuvwxyz", linewise: false })
+  })
+
+  test("word motions use copy row minimum columns", () => {
+    const cm = createRenderedCopyMode(["alpha beta", "  gamma delta"])
+
+    expect(cm.state().col).toBe(7)
+    expect(cm.prompt.wordNext(false)).toBe(true)
+    expect(cm.state().col).toBe(13)
+    cm.prompt.setCol(13)
+    expect(cm.prompt.wordPrev(false)).toBe(true)
+    expect(cm.state().col).toBe(7)
+    expect(cm.prompt.wordEnd(false)).toBe(true)
+    expect(cm.state().col).toBe(11)
+  })
+
+  test("word motions use target row minimum columns across rows", () => {
+    const cm = createRenderedCopyMode(["alpha beta", "  gamma delta"])
+
+    cm.prompt.setCol(16)
+    expect(cm.prompt.wordNext(false)).toBe(true)
+    expect(cm.state().idx).toBe(1)
+    expect(cm.state().col).toBe(9)
+
+    cm.prompt.jump("top")
+    cm.prompt.setCol(16)
+    expect(cm.prompt.wordEnd(false)).toBe(true)
+    expect(cm.state().idx).toBe(1)
+    expect(cm.state().col).toBe(13)
+  })
+
+  test("b uses previous row minimum columns across rows", () => {
+    const cm = createRenderedCopyMode(["alpha beta", "gamma"])
+    cm.prompt.jump("bottom")
+
+    expect(cm.state().col).toBe(7)
+    expect(cm.prompt.wordPrev(false)).toBe(true)
+    expect(cm.state().idx).toBe(0)
+    expect(cm.state().col).toBe(13)
+  })
+
   test("copyWordNext advances to next row when next word is on following line", () => {
     const next = copyWordNext([{ col: 0 }, { col: 0 }], (idx) => ["alpha", "beta gamma"][idx]!, 0, 4, false)
     expect(next).toEqual({ idx: 1, col: 5 })
@@ -4132,6 +4626,124 @@ describe("copy mode", () => {
     expect(evt.prevented()).toBe(true)
     expect(ctx.copyIdx()).toBe(0)
     expect(ctx.copyCol()).toBe(6)
+  })
+
+  test("e advances to next copy row like vim", () => {
+    const ctx = createHandler("abc", {
+      mode: "copy",
+      copy: {
+        idx: 0,
+        col: 4,
+        rows: [{ col: 0 }, { col: 0 }],
+        texts: ["alpha", "beta gamma"],
+      },
+    })
+
+    const evt = createEvent("e")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(evt.prevented()).toBe(true)
+    expect(ctx.copyIdx()).toBe(1)
+    expect(ctx.copyCol()).toBe(3)
+  })
+
+  test("e lands on single-char word on next copy row", () => {
+    const ctx = createHandler("abc", {
+      mode: "copy",
+      copy: {
+        idx: 0,
+        col: 4,
+        rows: [{ col: 0 }, { col: 0 }],
+        texts: ["alpha", "a beta"],
+      },
+    })
+
+    ctx.handler.handleKey(createEvent("e").event)
+    expect(ctx.copyIdx()).toBe(1)
+    expect(ctx.copyCol()).toBe(0)
+  })
+
+  test("E advances to next copy row with big word", () => {
+    const ctx = createHandler("abc", {
+      mode: "copy",
+      copy: {
+        idx: 0,
+        col: 4,
+        rows: [{ col: 0 }, { col: 0 }],
+        texts: ["alpha", "foo,bar baz"],
+      },
+    })
+
+    const evt = createEvent("E")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(evt.prevented()).toBe(true)
+    expect(ctx.copyIdx()).toBe(1)
+    expect(ctx.copyCol()).toBe(6)
+  })
+
+  test("e skips whitespace-only current copy row", () => {
+    const ctx = createHandler("abc", {
+      mode: "copy",
+      copy: {
+        idx: 0,
+        col: 0,
+        rows: [{ col: 0 }, { col: 0 }],
+        texts: ["   ", "beta"],
+      },
+    })
+
+    ctx.handler.handleKey(createEvent("e").event)
+    expect(ctx.copyIdx()).toBe(1)
+    expect(ctx.copyCol()).toBe(3)
+  })
+
+  test("e skips blank copy rows", () => {
+    const ctx = createHandler("abc", {
+      mode: "copy",
+      copy: {
+        idx: 0,
+        col: 4,
+        rows: [{ col: 0 }, { col: 0 }, { col: 0 }],
+        texts: ["alpha", "   ", "  beta"],
+      },
+    })
+
+    ctx.handler.handleKey(createEvent("e").event)
+    expect(ctx.copyIdx()).toBe(2)
+    expect(ctx.copyCol()).toBe(5)
+  })
+
+  test("e respects copy row column offsets", () => {
+    const ctx = createHandler("abc", {
+      mode: "copy",
+      copy: {
+        idx: 0,
+        col: 14,
+        rows: [{ col: 10 }, { col: 20 }],
+        texts: ["alpha", " beta"],
+      },
+    })
+
+    ctx.handler.handleKey(createEvent("e").event)
+    expect(ctx.copyIdx()).toBe(1)
+    expect(ctx.copyCol()).toBe(24)
+  })
+
+  test("e at final copy word end stays put", () => {
+    const ctx = createHandler("abc", {
+      mode: "copy",
+      copy: {
+        idx: 1,
+        col: 3,
+        rows: [{ col: 0 }, { col: 0 }],
+        texts: ["alpha", "beta"],
+      },
+    })
+
+    const evt = createEvent("e")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(evt.prevented()).toBe(true)
+    expect(ctx.copyIdx()).toBe(1)
+    expect(ctx.copyCol()).toBe(3)
   })
 
   test("B retreats to previous copy row with big word", () => {
@@ -4310,6 +4922,45 @@ describe("copy mode", () => {
     expect(ctx.handler.handleKey(evt.event)).toBe(true)
     expect(evt.prevented()).toBe(true)
     expect(ctx.state.mode()).toBe("normal")
+    expect(ctx.copyFocusInputs()).toBe(0)
+  })
+
+  test("i exits copy mode to insert without resetting scroll", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+
+    const evt = createEvent("i")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(evt.prevented()).toBe(true)
+    expect(ctx.state.mode()).toBe("insert")
+    expect(ctx.copyFocusInputs()).toBe(1)
+  })
+
+  test("i remains a copy find target when f is pending", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "alpha iris", col: 0 } })
+
+    ctx.handler.handleKey(createEvent("f").event)
+    const evt = createEvent("i")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(evt.prevented()).toBe(true)
+    expect(ctx.copyCol()).toBe(6)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.state.mode()).toBe("copy")
+    expect(ctx.copyFocusInputs()).toBe(0)
+  })
+
+  test("i from copy mode starts undoable insert session", () => {
+    const ctx = createHandler("ab", { mode: "copy" })
+    ctx.textarea.cursorOffset = 1
+
+    ctx.handler.handleKey(createEvent("i").event)
+    ctx.textarea.insertText("X")
+    ctx.handler.handleKey(createEvent("escape").event)
+
+    expect(ctx.textarea.plainText).toBe("aXb")
+
+    ctx.handler.handleKey(createEvent("u").event)
+    expect(ctx.textarea.plainText).toBe("ab")
+    expect(ctx.textarea.cursorOffset).toBe(1)
   })
 
   test("escape exits copy mode when not visual", () => {
@@ -4361,7 +5012,105 @@ describe("copy mode", () => {
     expect(ctx.copyVisualCalls).not.toContain("char")
   })
 
-  test("y yanks copy selection in copy mode", () => {
+  test("V after characterwise visual preserves copy anchor", () => {
+    createRoot((dispose) => {
+      const children = [
+        { id: "text-part", y: 0, height: 1 },
+        { id: "text-part", y: 1, height: 1 },
+        { id: "text-part", y: 2, height: 1 },
+      ]
+      const scroll = {
+        y: 0,
+        height: 3,
+        width: 80,
+        getChildren: () => children,
+        scrollBy(delta: number) {
+          scroll.y += delta
+        },
+      } as unknown as ScrollBoxRenderable
+      const cm = createCopyMode({
+        scroll: () => scroll,
+        messages: () => [{ id: "msg", role: "assistant" }],
+        parts: () => [{ type: "text", id: "part" } as Part],
+        thinking: () => false,
+        details: () => false,
+        session: () => "session",
+        toBottom() {},
+      })
+
+      cm.prompt.enter()
+      cm.prompt.visual("char")
+      cm.prompt.move("up")
+      cm.prompt.visual("line")
+
+      expect(cm.state().visual).toBe("line")
+      expect(cm.state().anchor).toEqual({ idx: 2, col: 3 })
+      expect(cm.state().idx).toBe(1)
+      dispose()
+    })
+  })
+
+  test("re-entering copy mode after focusing input restores previous position", () => {
+    const cm = createRenderedCopyMode(["one", "two", "three"])
+    cm.prompt.setCol(8)
+
+    cm.prompt.focusInput()
+    expect(cm.active()).toBe(false)
+
+    cm.prompt.enter()
+    expect(cm.active()).toBe(true)
+    expect(cm.state().idx).toBe(0)
+    expect(cm.state().col).toBe(8)
+  })
+
+  test("re-entering copy mode clamps restored position to shortened row", () => {
+    let line = "abcdefghijk"
+    const child = {
+      id: "text-part",
+      y: 0,
+      height: 1,
+      gutter: { calculateWidth: () => 4 },
+      getChildren: () => [
+        {
+          _y: 0,
+          plainText: line,
+          lineInfo: {
+            lineSources: [0],
+            lineStartCols: [0],
+            lineWidthCols: [Bun.stringWidth(line)],
+            lineWraps: [0],
+          },
+        },
+      ],
+    }
+    const scroll = {
+      y: 0,
+      height: 10,
+      width: 120,
+      scrollHeight: 1,
+      getChildren: () => [child],
+      scrollBy() {},
+    } as unknown as ScrollBoxRenderable
+    const cm = createCopyMode({
+      scroll: () => scroll,
+      messages: () => [{ id: "message", role: "assistant" }],
+      parts: () => [{ id: "part", type: "text", text: line }] as Part[],
+      thinking: () => false,
+      details: () => false,
+      session: () => "session",
+      toBottom() {},
+    })
+
+    cm.prompt.enter()
+    cm.prompt.setCol(17)
+    cm.prompt.focusInput()
+    line = "x"
+
+    cm.prompt.enter()
+    expect(cm.state().col).toBe(7)
+  })
+
+  test("y yanks copy selection and exits copy mode", () => {
     const ctx = createHandler("abc", { mode: "copy", copy: { text: "picked text", isVisual: true } })
 
     const evt = createEvent("y")
@@ -4369,8 +5118,76 @@ describe("copy mode", () => {
     expect(evt.prevented()).toBe(true)
     expect(ctx.copyYanks()).toBe(1)
     expect(ctx.copyCopies()).toBe(0)
+    expect(ctx.copyExitPreserveScrolls()).toBe(1)
     expect(ctx.state.register()).toEqual({ text: "picked text", linewise: false })
-    expect(ctx.copyExits).toEqual([true])
+    expect(ctx.copyExits()).toBe(0)
+  })
+
+  test("yy yanks current line and exits copy mode", async () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "picked line" } })
+
+    const first = createEvent("y")
+    expect(ctx.handler.handleKey(first.event)).toBe(true)
+    expect(first.prevented()).toBe(true)
+    expect(ctx.copyYankLines()).toBe(0)
+    expect(ctx.state.pending()).toBe("y")
+
+    const second = createEvent("y")
+    expect(ctx.handler.handleKey(second.event)).toBe(true)
+    expect(second.prevented()).toBe(true)
+    expect(ctx.copyYankLines()).toBe(1)
+    expect(ctx.copyYanks()).toBe(0)
+    expect(ctx.copyCopies()).toBe(0)
+    expect(ctx.state.register()).toEqual({ text: "picked line", linewise: false })
+    expect(ctx.state.pending()).toBe("")
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(ctx.copyExitPreserveScrolls()).toBe(1)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("Y yanks current line and exits copy mode to bottom", async () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "picked line" } })
+
+    const evt = createEvent("Y")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(evt.prevented()).toBe(true)
+    expect(ctx.copyYankLines()).toBe(1)
+    expect(ctx.copyYanks()).toBe(0)
+    expect(ctx.copyExitPreserveScrolls()).toBe(0)
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(ctx.copyExits()).toBe(1)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("Y yanks visual copy selection and exits copy mode to bottom", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "picked text", isVisual: true } })
+
+    const evt = createEvent("Y")
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(evt.prevented()).toBe(true)
+    expect(ctx.copyYanks()).toBe(1)
+    expect(ctx.copyYankLines()).toBe(0)
+    expect(ctx.copyExits()).toBe(1)
+    expect(ctx.copyExitPreserveScrolls()).toBe(0)
+    expect(ctx.state.register()).toEqual({ text: "picked text", linewise: false })
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("y H y in copy mode should not trigger yy", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+
+    ctx.handler.handleKey(createEvent("y").event)
+    expect(ctx.state.pending()).toBe("y")
+
+    ctx.handler.handleKey(createEvent("H").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyJumps).toContain("high")
+
+    ctx.handler.handleKey(createEvent("y").event)
+    expect(ctx.state.pending()).toBe("y")
+    expect(ctx.copyYankLines()).toBe(0)
   })
 
   test("return copies selection to clipboard path and exits copy mode", () => {
@@ -4381,6 +5198,20 @@ describe("copy mode", () => {
     expect(evt.prevented()).toBe(true)
     expect(ctx.copyCopies()).toBe(1)
     expect(ctx.copyYanks()).toBe(0)
+    expect(ctx.copyExitPreserveScrolls()).toBe(1)
+    expect(ctx.state.mode()).toBe("normal")
+  })
+
+  test("shift+return copies selection to clipboard path and exits copy mode to bottom", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { isVisual: true } })
+
+    const evt = createEvent("return", { shift: true })
+    expect(ctx.handler.handleKey(evt.event)).toBe(true)
+    expect(evt.prevented()).toBe(true)
+    expect(ctx.copyCopies()).toBe(1)
+    expect(ctx.copyYanks()).toBe(0)
+    expect(ctx.copyExits()).toBe(1)
+    expect(ctx.copyExitPreserveScrolls()).toBe(0)
     expect(ctx.state.mode()).toBe("normal")
   })
 
@@ -4453,6 +5284,51 @@ describe("copy mode", () => {
     ctx.handler.handleKey(createEvent("L").event)
 
     expect(ctx.copyJumps).toEqual(["high", "middle", "low"])
+  })
+
+  test("copy jump clears pending find", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "alpha beta kappa", col: 0 } })
+
+    ctx.handler.handleKey(createEvent("f").event)
+    expect(ctx.state.pending()).toBe("f")
+
+    ctx.handler.handleKey(createEvent("H").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyJumps).toEqual(["high"])
+
+    ctx.handler.handleKey(createEvent("k").event)
+    expect(ctx.copyMoves).toEqual(["up"])
+    expect(ctx.state.lastFind()).toBe(null)
+  })
+
+  test("copy jump clears pending scroll", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+
+    ctx.handler.handleKey(createEvent("z").event)
+    expect(ctx.state.pending()).toBe("z")
+
+    ctx.handler.handleKey(createEvent("H").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyJumps).toEqual(["high"])
+
+    ctx.handler.handleKey(createEvent("z").event)
+    expect(ctx.state.pending()).toBe("z")
+    expect(ctx.copyScrollCalls).toEqual([])
+  })
+
+  test("copy visual clears pending find", () => {
+    const ctx = createHandler("abc", { mode: "copy", copy: { text: "alpha beta", col: 0 } })
+
+    ctx.handler.handleKey(createEvent("f").event)
+    expect(ctx.state.pending()).toBe("f")
+
+    ctx.handler.handleKey(createEvent("v").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyVisualCalls).toEqual(["char"])
+
+    ctx.handler.handleKey(createEvent("b").event)
+    expect(ctx.copyCol()).toBe(0)
+    expect(ctx.state.lastFind()).toBe(null)
   })
 
   test("z sets pending, zz dispatches center scroll", () => {
@@ -4574,24 +5450,27 @@ describe("copy mode", () => {
     expect(ctx.state.pending()).toBe("w")
     ctx.handler.handleKey(createEvent("j").event)
     expect(ctx.state.mode()).toBe("normal")
-    expect(ctx.copyExits).toEqual([false])
+    expect(ctx.copyExitArgs).toEqual([false])
   })
 
-  test("i exits copy mode to insert without scrolling", () => {
+  test("i focuses input without scrolling", () => {
     const ctx = createHandler("abc", { mode: "copy" })
     const evt = createEvent("i")
     expect(ctx.handler.handleKey(evt.event)).toBe(true)
     expect(ctx.state.mode()).toBe("insert")
-    expect(ctx.copyExits).toEqual([false])
+    expect(ctx.copyFocusInputs()).toBe(1)
+    expect(ctx.copyExitPreserveScrolls()).toBe(0)
+    expect(ctx.copyExits()).toBe(0)
   })
 
-  test("i exits copy mode from visual mode to insert", () => {
+  test("i focuses input from visual copy mode", () => {
     const ctx = createHandler("abc", { mode: "copy", copy: { isVisual: true } })
     const evt = createEvent("i")
     expect(ctx.handler.handleKey(evt.event)).toBe(true)
     expect(ctx.state.mode()).toBe("insert")
-    expect(ctx.copyExitVisuals()).toBe(1)
-    expect(ctx.copyExits).toEqual([false])
+    expect(ctx.copyFocusInputs()).toBe(1)
+    expect(ctx.copyExitPreserveScrolls()).toBe(0)
+    expect(ctx.copyExits()).toBe(0)
   })
 
   test("y in visual mode in copy mode yanks and exits copy mode", () => {
@@ -4600,7 +5479,7 @@ describe("copy mode", () => {
     expect(ctx.handler.handleKey(evt.event)).toBe(true)
     expect(ctx.copyYanks()).toBe(1)
     expect(ctx.state.register()).toEqual({ text: "selected", linewise: false })
-    expect(ctx.copyExits).toEqual([true])
+    expect(ctx.copyExitPreserveScrolls()).toBe(1)
   })
 
   test("Ctrl+W j from visual in copy mode exits visual not copy", () => {
@@ -4623,8 +5502,8 @@ describe("copy mode cursor state", () => {
     const textarea = createTextarea("")
     const [enabled] = createSignal(true)
     const [mode, setMode] = createSignal<"normal" | "insert" | "replace" | "visual" | "visual-line" | "copy">("copy")
-  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "w">("")
-  const [lastFind, setLastFind] = createSignal<{ char: string; forward: boolean; till: boolean } | null>(null)
+    const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "w" | "r" | "vr">("")
+    const [lastFind, setLastFind] = createSignal<{ char: string; forward: boolean; till: boolean } | null>(null)
     const [register, setRegister] = createSignal<{ text: string; linewise: boolean } | null>(null)
     const [anchor, setAnchor] = createSignal<number | null>(null)
     const [replace, setReplace] = createSignal<number | null>(null)

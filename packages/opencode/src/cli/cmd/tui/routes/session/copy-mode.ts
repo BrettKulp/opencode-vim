@@ -4,6 +4,7 @@ import type { Part } from "@opencode-ai/sdk/v2"
 import {
   copyNextParagraph,
   copyPreviousParagraph,
+  copyWordEnd,
   copyWordNext,
   copyWordPrev,
   firstNonWhitespace,
@@ -49,6 +50,12 @@ const empty: CopyState = {
 
 const segmenter = new Intl.Segmenter()
 
+type Endpoint = { idx: number; col: number }
+function orderEndpoints(a: Endpoint, b: Endpoint): { start: Endpoint; end: Endpoint } {
+  const aFirst = a.idx < b.idx || (a.idx === b.idx && a.col <= b.col)
+  return aFirst ? { start: a, end: b } : { start: b, end: a }
+}
+
 export function createCopyMode(input: {
   scroll: () => ScrollBoxRenderable
   messages: Accessor<{ id: string; role: string }[]>
@@ -60,6 +67,7 @@ export function createCopyMode(input: {
 }) {
   const [state, setState] = createSignal<CopyState>({ ...empty })
   const [unified, setUnified] = createSignal(false)
+  const [yankLineFlash, setYankLineFlash] = createSignal<number | undefined>(undefined)
 
   // --- row building ---
 
@@ -176,15 +184,17 @@ export function createCopyMode(input: {
     if (info?.lineSources && local < info.lineSources.length) {
       const src = info.lineSources[local]
       const text = lines[src] ?? ""
-      const wrapped = info.lineWraps?.[local] === 1 || info.lineSources[local + 1] === src
+      const wrapped =
+        info.lineWraps?.[local] === 1 || info.lineSources[local - 1] === src || info.lineSources[local + 1] === src
       if (!wrapped) return { text, col: match.gutter }
-      let base = info.lineStartCols[local]
+      const lineStart = info.lineStartCols?.[local] ?? 0
+      let base = lineStart
       for (let i = local - 1; i >= 0; i--) {
-        if (info.lineSources[i] === src) base = info.lineStartCols[i]
+        if (info.lineSources[i] === src) base = info.lineStartCols?.[i] ?? base
         else break
       }
-      const offset = info.lineStartCols[local] - base
-      const width = info.lineWidthCols[local]
+      const offset = lineStart - base
+      const width = info.lineWidthCols?.[local] ?? Bun.stringWidth(text)
       return { text: sliceCols(text, offset, width), col: match.gutter }
     }
     if (local >= lines.length) return { text: "", col: match.gutter }
@@ -319,7 +329,10 @@ export function createCopyMode(input: {
       const newAbsolute = scr.scrollTop + child.y
       const contentDelta = newAbsolute - oldAbsolute
       const cappedDelta = Math.max(-scr.height, Math.min(scr.height, contentDelta))
-      if (contentDelta !== 0) scr.scrollTo(snap.atBottom ? scr.scrollHeight : snap.scrollY + cappedDelta)
+      if (contentDelta !== 0) {
+        if (typeof scr.scrollTo === "function") scr.scrollTo(snap.atBottom ? scr.scrollHeight : snap.scrollY + cappedDelta)
+        else scr.scrollBy(cappedDelta)
+      }
       return true
     }
 
@@ -367,21 +380,6 @@ export function createCopyMode(input: {
     }
   }
 
-  function pickVisibleTarget(list: CopyRow[], scr: { y: number; height: number }) {
-    const top = scr.y
-    const bottom = scr.y + scr.height - 1
-    const visible = list.filter(x => x.y >= top && x.y <= bottom)
-    if (visible.length) {
-      const midY = top + (bottom - top) / 2
-      const best = visible.reduce((a, b) =>
-        Math.abs(a.y - midY) < Math.abs(b.y - midY) ? a : b
-      )
-      return list.indexOf(best)
-    }
-    const idx = list.findLastIndex(x => x.role === "assistant")
-    return idx >= 0 ? idx : list.length - 1
-  }
-
   function keepCursorVisible() {
     const scr = input.scroll()
     if (!scr || scr.isDestroyed) return
@@ -396,19 +394,40 @@ export function createCopyMode(input: {
     if (current.y > bottom) scr.scrollBy(current.y - bottom)
   }
 
+  function enterTarget(list: CopyRow[]) {
+    const previous = state()
+    if (previous.idx < 0) {
+      const idx = list.findLastIndex((x) => x.role === "assistant")
+      const target = idx >= 0 ? idx : list.length - 1
+      const row = list[target]
+      if (!row) return
+      return { idx: target, col: copyMin(row), stick: "first" as const }
+    }
+
+    const idx = Math.max(0, Math.min(previous.idx, list.length - 1))
+    const row = list[idx]
+    if (!row) return
+    const min = copyMin(row)
+    const text = rowPadded(row)
+    return {
+      idx,
+      col: Math.max(min, Math.min(previous.col, text.length > 0 ? Math.min(input.scroll().width - 2, text.length - 1) : min)),
+      stick: previous.stick,
+    }
+  }
+
   function enter() {
     const init = () => {
-      const scr = input.scroll()
       if (!unified()) {
         const snap = snapshotScroll()
         batch(() => {
           setUnified(true)
           // Activate first so rows() excludes reasoning (matches what row memo will see)
-          setState((s) => ({ ...s, active: true, idx: 0, col: 0, stick: "first" as const }))
+          setState((s) => ({ ...s, active: true }))
         })
         compensateScroll(snap, () => setTimeout(keepCursorVisible, 0))
       } else {
-        setState((s) => ({ ...s, active: true, idx: 0, col: 0, stick: "first" as const }))
+        setState((s) => ({ ...s, active: true }))
       }
 
       // Pick target from rows() AFTER active is true (reasoning excluded)
@@ -417,9 +436,16 @@ export function createCopyMode(input: {
         setState({ ...empty })
         return false
       }
-      const target = pickVisibleTarget(list, scr)
-      const row = list[target]
-      setState((s) => ({ ...s, idx: target, col: copyMin(row), stick: "first" as const }))
+      const target = enterTarget(list)
+      if (!target) return false
+      setState((s) => ({
+        ...s,
+        col: target.col,
+        stick: target.stick,
+        visual: undefined,
+        anchor: undefined,
+      }))
+      sync(target.idx)
       keepCursorVisible()
       return true
     }
@@ -443,6 +469,17 @@ export function createCopyMode(input: {
       setUnified(false)
     })
     compensateScroll(snap)
+  }
+
+  function exitPreserveScroll() {
+    batch(() => {
+      setState((s) => ({ ...s, active: false, visual: undefined, anchor: undefined }))
+      setUnified(false)
+    })
+  }
+
+  function focusInput() {
+    exitPreserveScroll()
   }
 
   function move(action: "up" | "down" | "left" | "right") {
@@ -472,12 +509,17 @@ export function createCopyMode(input: {
     setState((prev) => ({ ...prev, col: c, stick: c - min }))
   }
 
+  function wordRows(list: CopyRow[], cache: Map<string, any>) {
+    return list.map((row) => ({ col: copyMin(row, cache) }))
+  }
+
   function wordNext(big: boolean) {
     const s = state()
     if (!s.active) return false
     const list = rows()
     if (!list.length) return false
-    const next = copyWordNext(list, (idx) => rowText(list[idx]!), s.idx, s.col, big)
+    const cache = new Map(input.scroll().getChildren().map((c) => [c.id, c]))
+    const next = copyWordNext(wordRows(list, cache), (idx) => rowText(list[idx]!, cache), s.idx, s.col, big)
     if (next.idx === s.idx && next.col === s.col) return false
     if (next.idx !== s.idx) sync(next.idx)
     setCol(next.col)
@@ -489,10 +531,24 @@ export function createCopyMode(input: {
     if (!s.active) return false
     const list = rows()
     if (!list.length) return false
-    const prev = copyWordPrev(list, (idx) => rowText(list[idx]!), s.idx, s.col, big)
+    const cache = new Map(input.scroll().getChildren().map((c) => [c.id, c]))
+    const prev = copyWordPrev(wordRows(list, cache), (idx) => rowText(list[idx]!, cache), s.idx, s.col, big)
     if (prev.idx === s.idx && prev.col === s.col) return false
     if (prev.idx !== s.idx) sync(prev.idx)
     setCol(prev.col)
+    return true
+  }
+
+  function wordEnd(big: boolean) {
+    const s = state()
+    if (!s.active) return false
+    const list = rows()
+    if (!list.length) return false
+    const cache = new Map(input.scroll().getChildren().map((c) => [c.id, c]))
+    const next = copyWordEnd(wordRows(list, cache), (idx) => rowText(list[idx]!, cache), s.idx, s.col, big)
+    if (next.idx === s.idx && next.col === s.col) return false
+    if (next.idx !== s.idx) sync(next.idx)
+    setCol(next.col)
     return true
   }
 
@@ -543,7 +599,7 @@ export function createCopyMode(input: {
     setState((prev) => ({
       ...prev,
       visual: mode,
-      anchor: { idx: prev.idx, col: prev.col },
+      anchor: prev.anchor ?? { idx: prev.idx, col: prev.col },
     }))
   }
 
@@ -561,10 +617,8 @@ export function createCopyMode(input: {
         .getChildren()
         .map((c) => [c.id, c]),
     )
-    const a = s.anchor
     const h = { idx: s.idx, col: s.col }
-    const start = a.idx <= h.idx ? a : h
-    const end = a.idx <= h.idx ? h : a
+    const { start, end } = orderEndpoints(s.anchor, h)
     if (s.visual === "line") {
       return Array.from({ length: end.idx - start.idx + 1 }, (_, i) => list[start.idx + i])
         .filter((row): row is CopyRow => !!row)
@@ -593,6 +647,23 @@ export function createCopyMode(input: {
   function yank() {
     const text = selectionText()
     if (!text) return null
+    return { text, linewise: false }
+  }
+
+  function yankLine() {
+    const list = rows()
+    const s = state()
+    const row = list[s.idx]
+    if (!row) return null
+    const cache = new Map(
+      input
+        .scroll()
+        .getChildren()
+        .map((c) => [c.id, c]),
+    )
+    const text = signedText(row, cache)
+    setYankLineFlash(s.idx)
+    setTimeout(() => setYankLineFlash(undefined), 70)
     return { text, linewise: false }
   }
 
@@ -708,7 +779,40 @@ export function createCopyMode(input: {
 
   const highlights = createMemo(() => {
     const s = state()
-    if (!s.active || !s.visual || !s.anchor) return new Map<string, CopyHighlight[]>()
+    const out = new Map<string, CopyHighlight[]>()
+    if (!s.active) return out
+    const flashIdx = yankLineFlash()
+    const addHighlight = (row: CopyRow, min: number, text: string, left: number, right: number) => {
+      if (left > right) return
+      const entry = {
+        line: row.line,
+        left,
+        right,
+        text: text.slice(Math.max(0, left - min), Math.max(0, right - min + 1)),
+      }
+      const arr = out.get(row.id)
+      if (arr) arr.push(entry)
+      else out.set(row.id, [entry])
+    }
+
+    if (flashIdx !== undefined) {
+      const list = rows()
+      const cache = new Map(
+        input
+          .scroll()
+          .getChildren()
+          .map((c) => [c.id, c]),
+      )
+      const row = list[flashIdx]
+      if (row) {
+        const text = rowText(row, cache) || ""
+        const min = copyMin(row, cache)
+        const max = text.length > 0 ? min + text.length - 1 : min
+        addHighlight(row, min, text, min, max)
+      }
+    }
+
+    if (!s.visual || !s.anchor) return out
     const list = rows()
     const cache = new Map(
       input
@@ -716,11 +820,9 @@ export function createCopyMode(input: {
         .getChildren()
         .map((c) => [c.id, c]),
     )
-    const a = s.anchor
     const h = { idx: s.idx, col: s.col }
-    const start = a.idx <= h.idx ? a : h
-    const end = a.idx <= h.idx ? h : a
-    const out = new Map<string, CopyHighlight[]>()
+    const { start, end } = orderEndpoints(s.anchor, h)
+
     for (let i = start.idx; i <= end.idx; i++) {
       const r = list[i]
       if (!r) continue
@@ -731,24 +833,40 @@ export function createCopyMode(input: {
         s.visual === "line" ? min : i === start.idx && i === end.idx ? start.col : i === start.idx ? start.col : min
       const right =
         s.visual === "line" ? max : i === start.idx && i === end.idx ? end.col : i === end.idx ? end.col : max
-      const cur = out.get(r.id) ?? []
-      cur.push({
-        line: r.line,
-        left,
-        right,
-        text: text.slice(Math.max(0, left - min), Math.max(0, right - min + 1)),
-      })
-      out.set(r.id, cur)
+      if (i !== h.idx) {
+        addHighlight(r, min, text, left, right)
+        continue
+      }
+      // cursor cell is painted separately by CopyOverlay so the cursor keeps its theme.text color
+      addHighlight(r, min, text, left, h.col - 1)
+      addHighlight(r, min, text, h.col + 1, right)
     }
     return out
+  })
+
+  const cursorText = createMemo(() => {
+    const s = state()
+    if (!s.active) return " "
+    const row = rows()[s.idx]
+    if (!row) return " "
+    const text = copyText()
+    let col = 0
+    for (const seg of segmenter.segment(text)) {
+      if (col >= s.col) return seg.segment
+      col += Bun.stringWidth(seg.segment)
+    }
+    return " "
   })
 
   return {
     prompt: {
       enter,
-      exit: (scrollToBottom?: boolean) => exit(scrollToBottom),
+      exit,
+      exitPreserveScroll,
+      focusInput,
       visual,
       yank,
+      yankLine,
       copy,
       isVisual: () => !!state().visual,
       exitVisual,
@@ -757,6 +875,7 @@ export function createCopyMode(input: {
       jump,
       wordNext,
       wordPrev,
+      wordEnd,
       nextParagraph,
       previousParagraph,
       text: copyText,
@@ -772,5 +891,6 @@ export function createCopyMode(input: {
     unified,
     clamp,
     state,
+    cursorText,
   }
 }

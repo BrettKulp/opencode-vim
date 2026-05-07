@@ -63,7 +63,7 @@ Toggle via command palette (`Ctrl+p` -> `Toggle vim mode`).
 
 **Editing**
 
-`i` `I` `a` `A` `o` `O` `R` `x` `~` `dd` `dw` `db` `d}` `d{` `cc` `cw` `cb` `C` `c}` `c{` `S` `J`
+`i` `I` `a` `A` `o` `O` `R` `r` `x` `~` `dd` `dw` `db` `d}` `d{` `cc` `cw` `cb` `C` `c}` `c{` `S` `J`
 
 **yank / put / undo**
 
@@ -97,7 +97,9 @@ Works similarly to tmux copy mode within opencode tui.
 - Press `v` / `V` to start character-wise or line-wise selection.
 - `y` yanks visual selection to the vim register (stays in copy mode).
 - `yy` yanks the current line to the vim register with a brief highlight flash.
+- `Y` yanks to the vim register and scrolls to the bottom.
 - `Enter` copies to the system clipboard.
+- `Shift+Enter` copies to the system clipboard and scrolls to the bottom.
 - `z` `zt` `zz` `zb` adjust copy-mode scroll positioning.
 
 > [!TIP]

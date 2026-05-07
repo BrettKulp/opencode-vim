@@ -7,7 +7,6 @@ import { vimWindowNavigation, type VimWindowNavigation } from "./vim-motion-wind
 import {
   appendAfterCursor,
   appendLineEnd,
-  clampCursorToLine,
   clearSelection,
   deleteLine,
   deleteLineEnd,
@@ -20,6 +19,7 @@ import {
   findChar,
   findCharInLine,
   firstNonWhitespace,
+  getLineColumn,
   insertLineStart,
   joinLines,
   moveBigWordEnd,
@@ -43,11 +43,13 @@ import {
   openLineBelow,
   type ParagraphOperation,
   type ParagraphResult,
+  type VimWantedColumn,
   pasteAfter,
   pasteBefore,
   previousParagraphOperation,
   prevWordStart,
   replaceUnderCursor,
+  replaceSelection,
   substituteLine,
   substituteLineEnd,
   syncSelection,
@@ -86,12 +88,16 @@ export function createVimHandler(input: {
   copyVisual?: (mode: "char" | "line") => void
   copyExitVisual?: () => void
   copyExit?: (scrollToBottom?: boolean) => void
+  copyExitPreserveScroll?: () => void
+  copyFocusInput?: () => void
   copyYank?: () => void
+  copyYankLine?: () => void
   copyCopy?: () => void
   copyIsVisual?: () => boolean
   copyJump?: (action: VimJump) => void
   copyWordNext?: (big: boolean) => boolean
   copyWordPrev?: (big: boolean) => boolean
+  copyWordEnd?: (big: boolean) => boolean
   copyNextParagraph?: () => boolean
   copyPreviousParagraph?: () => boolean
   copyText?: () => string
@@ -107,6 +113,8 @@ export function createVimHandler(input: {
   register?: () => VimRegister
   setRegister?: (register: VimRegister, notify?: boolean) => void
 }) {
+  let wantedColumn: VimWantedColumn | undefined
+
   function hasModifier(event: VimEvent) {
     return !!event.ctrl || !!event.meta || !!event.super
   }
@@ -117,7 +125,14 @@ export function createVimHandler(input: {
 
   function value(event: VimEvent) {
     if (event.name === "space") return " "
+    if (event.shift && event.name?.length === 1 && /[a-z]/.test(event.name)) return event.name.toUpperCase()
     return event.name ?? ""
+  }
+
+  function replaceValue(event: VimEvent, visual = false) {
+    if (event.name === "return") return visual ? "\r" : "\n"
+    if (isPrintable(event)) return value(event)
+    return null
   }
 
   function isShifted(event: VimEvent, key: string) {
@@ -141,6 +156,22 @@ export function createVimHandler(input: {
     input.state.setRegister(next)
   }
 
+  function clearWantedColumn() {
+    wantedColumn = undefined
+  }
+
+  function moveVertical(direction: "up" | "down") {
+    const column = wantedColumn ?? getLineColumn(input.textarea())
+    if (direction === "up") moveLineUp(input.textarea(), column)
+    else moveLineDown(input.textarea(), column)
+    wantedColumn = column
+  }
+
+  function preservesWantedColumn(event: VimEvent, key: string) {
+    if ((key === "j" || key === "k" || key === "down" || key === "up") && !event.shift && !hasModifier(event)) return true
+    return (key === "v" || isShifted(event, "v")) && !hasModifier(event)
+  }
+
   function snapshot(): VimSnapshot {
     if (input.snapshot) return input.snapshot()
     return {
@@ -150,6 +181,7 @@ export function createVimHandler(input: {
   }
 
   function restore(next: VimSnapshot) {
+    clearWantedColumn()
     clearSelection(input.textarea())
     input.state.clearPending()
     input.state.setMode("normal")
@@ -237,6 +269,57 @@ export function createVimHandler(input: {
   }
 
   function dispatch(event: VimEvent, key: string): boolean {
+    if (!preservesWantedColumn(event, key)) clearWantedColumn()
+
+    if (input.state.pending() === "r") {
+      if (hasModifier(event)) {
+        input.state.clearPending()
+        return false
+      }
+
+      const next = replaceValue(event)
+      if (next !== null) {
+        edit(() => {
+          const offset = input.textarea().cursorOffset
+          if (deleteUnderCursor(input.textarea())) {
+            input.textarea().cursorOffset = offset
+            input.textarea().insertText(next)
+            input.textarea().cursorOffset = next === "\n" ? offset + 1 : offset
+          }
+          input.state.clearPending()
+        })
+        event.preventDefault()
+        return true
+      }
+
+      input.state.clearPending()
+      event.preventDefault()
+      return true
+    }
+
+    if (input.state.pending() === "vr" && input.state.isVisual()) {
+      if (hasModifier(event)) {
+        input.state.clearPending()
+        return false
+      }
+
+      const next = replaceValue(event, true)
+      if (next !== null) {
+        edit(() => {
+          replaceSelection(input.textarea(), next, input.state.isVisualLine(), input.state.anchor() ?? undefined)
+          clearSelection(input.textarea())
+          input.state.clearPending()
+          input.state.setMode("normal")
+        })
+        event.preventDefault()
+        return true
+      }
+
+      input.state.clearPending()
+      event.preventDefault()
+      return true
+    }
+
     const scroll = vimScroll(event)
     if (scroll) {
       input.state.clearPending()
@@ -300,6 +383,12 @@ export function createVimHandler(input: {
           clearSelection(input.textarea())
           input.state.setMode("normal")
         })
+        event.preventDefault()
+        return true
+      }
+
+      if (key === "r" && !event.shift && !hasModifier(event)) {
+        input.state.setPending("vr")
         event.preventDefault()
         return true
       }
@@ -647,6 +736,12 @@ export function createVimHandler(input: {
       return true
     }
 
+    if (key === "r" && !event.shift && !hasModifier(event)) {
+      input.state.setPending("r")
+      event.preventDefault()
+      return true
+    }
+
     if (key === "p" && !event.shift && !hasModifier(event)) {
       edit(() => {
         pasteAfter(input.textarea(), register())
@@ -829,8 +924,8 @@ export function createVimHandler(input: {
       return true
     }
 
-    if (key === "j" && !event.shift && !hasModifier(event)) {
-      moveLineDown(input.textarea())
+    if ((key === "j" || key === "down") && !event.shift && !hasModifier(event)) {
+      moveVertical("down")
       event.preventDefault()
       return true
     }
@@ -853,8 +948,8 @@ export function createVimHandler(input: {
       return true
     }
 
-    if (key === "k" && !event.shift && !hasModifier(event)) {
-      moveLineUp(input.textarea())
+    if ((key === "k" || key === "up") && !event.shift && !hasModifier(event)) {
+      moveVertical("up")
       event.preventDefault()
       return true
     }
@@ -873,6 +968,7 @@ export function createVimHandler(input: {
 
     if (key === "$" && !hasModifier(event)) {
       moveLineEnd(input.textarea())
+      wantedColumn = "end"
       event.preventDefault()
       return true
     }
@@ -966,8 +1062,76 @@ export function createVimHandler(input: {
   }
 
   function copy(event: VimEvent, key: string): boolean {
+    if (input.state.pending() === "" && isShifted(event, "y") && !hasModifier(event)) {
+      if (input.copyIsVisual?.()) {
+        input.copyYank?.()
+        input.state.setMode("normal")
+        input.copyExit?.()
+        event.preventDefault()
+        return true
+      }
+      input.copyYankLine?.()
+      setTimeout(() => {
+        input.state.setMode("normal")
+        input.copyExit?.()
+      }, 70)
+      event.preventDefault()
+      return true
+    }
+
+    if (key === "y") {
+      if (input.copyIsVisual?.()) {
+        input.copyYank?.()
+        input.copyExitPreserveScroll?.()
+        input.state.setMode("normal")
+        event.preventDefault()
+        return true
+      }
+      if (input.state.pending() === "y") {
+        input.state.clearPending()
+        input.copyYankLine?.()
+        setTimeout(() => {
+          input.copyExitPreserveScroll?.()
+          input.state.setMode("normal")
+        }, 70)
+        event.preventDefault()
+        return true
+      }
+      input.state.setPending("y")
+      event.preventDefault()
+      return true
+    }
+
+    const pending = input.state.pending()
+    const clearCopyPending = () => {
+      if (input.state.pending()) input.state.clearPending()
+    }
+    if (pending === "y") {
+      input.state.clearPending()
+    }
+
+    if (key === "return") {
+      input.copyCopy?.()
+      if (event.shift) {
+        input.state.setMode("normal")
+        input.copyExit?.()
+        event.preventDefault()
+        return true
+      }
+      input.copyExitPreserveScroll?.()
+      input.state.setMode("normal")
+      event.preventDefault()
+      return true
+    }
     if (key === "q") {
       input.state.setMode("normal")
+      event.preventDefault()
+      return true
+    }
+    if (pending === "" && key === "i" && !event.shift && !hasModifier(event)) {
+      begin()
+      input.copyFocusInput?.()
+      input.state.setMode("insert")
       event.preventDefault()
       return true
     }
@@ -979,16 +1143,6 @@ export function createVimHandler(input: {
         return true
       }
       input.state.setMode("normal")
-      event.preventDefault()
-      return true
-    }
-
-    if (key === "i") {
-      if (input.copyIsVisual?.()) input.copyExitVisual?.()
-      input.state.setSkipExitOnModeChange(true)
-      input.state.setExitScrollToBottom(false)
-      input.state.setMode("insert")
-      input.copyExit?.(false)
       event.preventDefault()
       return true
     }
@@ -1015,6 +1169,7 @@ export function createVimHandler(input: {
 
     const scroll = vimScroll(event)
     if (scroll) {
+      clearCopyPending()
       input.scroll(scroll)
       event.preventDefault()
       return true
@@ -1027,56 +1182,46 @@ export function createVimHandler(input: {
       return true
     }
 
-    if (hasModifier(event)) return false
+    if (hasModifier(event)) {
+      clearCopyPending()
+      return false
+    }
 
     if (isShifted(event, "h")) {
+      clearCopyPending()
       input.copyJump?.("high")
       event.preventDefault()
       return true
     }
 
     if (isShifted(event, "m")) {
+      clearCopyPending()
       input.copyJump?.("middle")
       event.preventDefault()
       return true
     }
 
     if (isShifted(event, "l")) {
+      clearCopyPending()
       input.copyJump?.("low")
       event.preventDefault()
       return true
     }
 
     if (isShifted(event, "v")) {
+      clearCopyPending()
       input.copyVisual?.("line")
       event.preventDefault()
       return true
     }
 
     if (key === "v" && !event.shift) {
+      clearCopyPending()
       input.copyVisual?.("char")
       event.preventDefault()
       return true
     }
 
-    if (key === "y") {
-      if (input.copyIsVisual?.()) {
-        input.copyYank?.()
-        input.copyExitVisual?.()
-      }
-      input.copyExit?.(true)
-      event.preventDefault()
-      return true
-    }
-
-    if (key === "return") {
-      input.copyCopy?.()
-      input.state.setMode("normal")
-      event.preventDefault()
-      return true
-    }
-
-    const pending = input.state.pending()
     if (pending === "f" || pending === "F" || pending === "t" || pending === "T") {
       if (key.length === 1) {
         const forward = pending === "f" || pending === "t"
@@ -1185,6 +1330,10 @@ export function createVimHandler(input: {
     }
 
     if (key === "e" && !event.shift) {
+      if (input.copyWordEnd?.(false)) {
+        event.preventDefault()
+        return true
+      }
       const text = input.copyText?.() ?? ""
       copyMotion(wordEnd(text, pos, false))
       event.preventDefault()
@@ -1215,6 +1364,10 @@ export function createVimHandler(input: {
     }
 
     if (isShifted(event, "e")) {
+      if (input.copyWordEnd?.(true)) {
+        event.preventDefault()
+        return true
+      }
       const text = input.copyText?.() ?? ""
       copyMotion(wordEnd(text, pos, true))
       event.preventDefault()
@@ -1315,9 +1468,9 @@ export function createVimHandler(input: {
 
       if (input.state.isInsert()) {
         if (event.name !== "escape") return false
-        clampCursorToLine(input.textarea())
         input.state.setMode("normal")
         input.state.commitEdit(snapshot())
+        moveLeft(input.textarea())
         event.preventDefault()
         return true
       }

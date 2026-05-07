@@ -10,34 +10,26 @@ import {
   dim,
   fg,
 } from "@opentui/core"
-import {
-  createEffect,
-  createMemo,
-  onMount,
-  createSignal,
-  onCleanup,
-  on,
-  Show,
-  Switch,
-  Match,
-} from "solid-js"
+import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
 import "opentui-spinner/solid"
 import path from "path"
 import { fileURLToPath } from "url"
 import { Filesystem } from "@/util/filesystem"
 import { useLocal } from "@tui/context/local"
-import { tint, useTheme } from "@tui/context/theme"
+import { selectedForeground, tint, useTheme } from "@tui/context/theme"
 import { EmptyBorder, SplitBorder } from "@tui/component/border"
+import { Spinner } from "@tui/component/spinner"
 import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { useProject } from "@tui/context/project"
 import { useSync } from "@tui/context/sync"
 import { useEvent } from "@tui/context/event"
-import { useEditorContext } from "@tui/context/editor"
+import { editorSelectionKey, useEditorContext, type EditorSelection } from "@tui/context/editor"
 import { MessageID, PartID } from "@/session/schema"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { useKeybind } from "@tui/context/keybind"
 import { usePromptHistory, type PromptInfo } from "./history"
+import { computePromptTraits } from "./traits"
 import { assign } from "./part"
 import { usePromptStash } from "./stash"
 import { DialogStash } from "../dialog-stash"
@@ -62,7 +54,12 @@ import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
-import { DialogWorkspaceCreate, restoreWorkspaceSession } from "../dialog-workspace-create"
+import {
+  confirmWorkspaceFileChanges,
+  openWorkspaceSelect,
+  warpWorkspaceSession,
+  type WorkspaceSelection,
+} from "../dialog-workspace-create"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "@tui/context/args"
 import { useVimEnabled } from "../vim"
@@ -73,6 +70,8 @@ import { vimScroll } from "../vim/vim-scroll"
 import { useVimIndicator } from "../vim/vim-indicator"
 import { emptyRows } from "./empty-selection"
 import { CONSOLE_MANAGED_ICON, consoleManagedProviderLabel } from "@tui/util/provider-origin"
+import { Flag } from "@opencode-ai/core/flag/flag"
+import { WorkspaceLabel, type WorkspaceStatus } from "../workspace-label"
 
 export type PromptProps = {
   sessionID?: string
@@ -91,6 +90,8 @@ export type PromptProps = {
   copy?: {
     enter: () => void
     exit: (scrollToBottom?: boolean) => void
+    exitPreserveScroll: () => void
+    focusInput: () => void
     visual: (mode: "char" | "line") => void
     yank: () => { text: string; linewise: boolean } | null
     yankLine: () => { text: string; linewise: boolean } | null
@@ -102,6 +103,7 @@ export type PromptProps = {
     jump: (action: "top" | "bottom" | "high" | "middle" | "low") => void
     wordNext: (big: boolean) => boolean
     wordPrev: (big: boolean) => boolean
+    wordEnd: (big: boolean) => boolean
     nextParagraph: () => boolean
     previousParagraph: () => boolean
     text: () => string
@@ -139,6 +141,32 @@ function fadeColor(color: RGBA, alpha: number) {
   return RGBA.fromValues(color.r, color.g, color.b, color.a * alpha)
 }
 
+function hasEditorRangeSelection(selection: EditorSelection["ranges"][number]) {
+  return (
+    selection.selection.start.line !== selection.selection.end.line ||
+    selection.selection.start.character !== selection.selection.end.character
+  )
+}
+
+function getEditorRangeLabel(selection: EditorSelection["ranges"][number]) {
+  if (!hasEditorRangeSelection(selection)) return
+  if (selection.selection.start.line === selection.selection.end.line) return `#${selection.selection.start.line}`
+  return `#${selection.selection.start.line}-${selection.selection.end.line}`
+}
+
+function formatEditorContext(selection: EditorSelection) {
+  const selected = selection.ranges.filter(hasEditorRangeSelection)
+  if (selected.length === 0)
+    return `<system-reminder>Note: The user opened the file "${selection.filePath}". This may or may not be relevant to the current task.</system-reminder>\n`
+
+  const ranges = selected.map((range, index) => {
+    const prefix = selected.length > 1 ? `Selection ${index + 1}: ` : ""
+    return `Note: The user selected ${prefix}${getEditorRangeLabel(range)} from "${selection.filePath}". \`\`\`${range.text}\`\`\`\n\n`
+  })
+
+  return `<system-reminder>${ranges.join("\n")} This may or may not be relevant to the current task.</system-reminder>\n`
+}
+
 let stashed: { prompt: PromptInfo; cursor: number } | undefined
 
 export function Prompt(props: PromptProps) {
@@ -171,13 +199,21 @@ export function Prompt(props: PromptProps) {
   const list = createMemo(() => props.placeholders?.normal ?? [])
   const shell = createMemo(() => props.placeholders?.shell ?? [])
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
-  const editorPath = createMemo(() => (fileContextEnabled() ? editor.selection()?.filePath : undefined))
-  const editorSelectionLabel = createMemo(() => {
-    const selection = fileContextEnabled() ? editor.selection()?.selection : undefined
+  const [dismissedEditorSelectionKey, setDismissedEditorSelectionKey] = createSignal<string>()
+  const editorContext = createMemo(() => {
+    const selection = fileContextEnabled() ? editor.selection() : undefined
     if (!selection) return
-    if (selection.start.line === selection.end.line && selection.start.character === selection.end.character) return
-    if (selection.start.line === selection.end.line) return `#${selection.start.line}`
-    return `#${selection.start.line}-${selection.end.line}`
+    return editorSelectionKey(selection) === dismissedEditorSelectionKey() ? undefined : selection
+  })
+  const editorPath = createMemo(() => editorContext()?.filePath)
+  const editorSelectionLabel = createMemo(() => {
+    const ranges = editorContext()?.ranges
+    if (!ranges) return
+    const first = ranges.find(hasEditorRangeSelection) ?? ranges[0]
+    if (!first) return
+    return [getEditorRangeLabel(first), ranges.length > 1 ? `+${ranges.length - 1}` : undefined]
+      .filter(Boolean)
+      .join(" ")
   })
   const editorFileLabel = createMemo(() => {
     const value = editorPath()
@@ -193,6 +229,8 @@ export function Prompt(props: PromptProps) {
     if (!file) return
     return Locale.truncateMiddle(file, Math.max(12, Math.min(48, Math.floor(dimensions().width / 3))))
   })
+  const editorContextLabelState = createMemo(() => editor.labelState())
+  const [editorContextHover, setEditorContextHover] = createSignal(false)
   const [auto, setAuto] = createSignal<AutocompleteRef>()
   const maxHeight = createMemo(() => cfg?.prompt_max_height ?? 6)
   const showScrollbar = createMemo(() => cfg?.prompt_scrollbar !== false)
@@ -205,6 +243,86 @@ export function Prompt(props: PromptProps) {
     return consoleManagedProviderLabel(sync.data.console_state.consoleManagedProviders, current.providerID, provider)
   })
   const hasRightContent = createMemo(() => Boolean(props.right || activeOrgName()))
+  const defaultWorkspaceID = createMemo(() => props.workspaceID ?? project.workspace.current())
+  const [workspaceSelection, setWorkspaceSelection] = createSignal<WorkspaceSelection>()
+  const [workspaceCreating, setWorkspaceCreating] = createSignal(false)
+  const [workspaceCreatingDots, setWorkspaceCreatingDots] = createSignal(3)
+  const [warpNotice, setWarpNotice] = createSignal<string>()
+
+  function selectWorkspace(selection: WorkspaceSelection | undefined) {
+    setWorkspaceSelection(selection)
+  }
+
+  function setCreatingWorkspace(creating: boolean) {
+    setWorkspaceCreating(creating)
+  }
+
+  function showWarpNotice(name: string) {
+    setWarpNotice(`Warped to ${name}`)
+    setTimeout(() => setWarpNotice(undefined), 4000)
+  }
+
+  async function createWorkspace(selection: Extract<WorkspaceSelection, { type: "new" }>) {
+    setCreatingWorkspace(true)
+    const result = await sdk.client.experimental.workspace
+      .create({ type: selection.workspaceType, branch: null })
+      .catch(() => undefined)
+    if (result == undefined || result.error || !result.data) {
+      selectWorkspace(undefined)
+      setCreatingWorkspace(false)
+      toast.show({
+        message: "Creating workspace failed",
+        variant: "error",
+      })
+      return
+    }
+
+    await project.workspace.sync()
+    const workspace = result.data
+    selectWorkspace({
+      type: "existing",
+      workspaceID: workspace.id,
+      workspaceType: workspace.type,
+      workspaceName: workspace.name,
+    })
+    setCreatingWorkspace(false)
+    return workspace
+  }
+
+  async function warpSession(selection: WorkspaceSelection) {
+    if (!props.sessionID) {
+      selectWorkspace(selection)
+      dialog.clear()
+      if (selection.type === "new") void createWorkspace(selection)
+      return
+    }
+    const sourceWorkspaceID = project.workspace.current()
+    const copyChanges = await confirmWorkspaceFileChanges({ dialog, sdk, sourceWorkspaceID })
+    if (copyChanges === undefined) return
+    selectWorkspace(selection)
+    dialog.clear()
+
+    const workspace =
+      selection.type === "none"
+        ? { id: null, name: "local project" }
+        : selection.type === "existing"
+          ? { id: selection.workspaceID, name: selection.workspaceName }
+          : await createWorkspace(selection)
+    if (!workspace) return
+
+    const warped = await warpWorkspaceSession({
+      dialog,
+      sdk,
+      sync,
+      project,
+      toast,
+      sourceWorkspaceID,
+      workspaceID: workspace.id,
+      sessionID: props.sessionID,
+      copyChanges,
+    })
+    if (warped) showWarpNotice(workspace.name)
+  }
 
   const [scrollbar, setScrollbar] = createSignal<string[] | null>(null)
   function syncScrollbar() {
@@ -239,8 +357,8 @@ export function Prompt(props: PromptProps) {
         const ts = Math.max(start, cs)
         const te = Math.min(end, ce)
         const cov = te - ts
-        if (cov >= 2) chars.push("\u2588")
-        else if (cov > 0) chars.push(ts - cs === 0 ? "\u2580" : "\u2584")
+        if (cov >= 2) chars.push("█")
+        else if (cov > 0) chars.push(ts - cs === 0 ? "▀" : "▄")
         else chars.push(" ")
       }
       setScrollbar(chars)
@@ -256,6 +374,15 @@ export function Prompt(props: PromptProps) {
     if (scrollbar() !== null) setScrollbar(null)
   })
 
+  createEffect(() => {
+    if (!workspaceCreating()) {
+      setWorkspaceCreatingDots(3)
+      return
+    }
+    const timer = setInterval(() => setWorkspaceCreatingDots((dots) => (dots % 3) + 1), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+
   function promptModelWarning() {
     toast.show({
       variant: "warning",
@@ -265,6 +392,11 @@ export function Prompt(props: PromptProps) {
     if (sync.data.provider.length === 0) {
       dialog.replace(() => <DialogProviderConnect />)
     }
+  }
+
+  function dismissEditorContext() {
+    setDismissedEditorSelectionKey(editorSelectionKey(editorContext()))
+    editor.clearSelection()
   }
 
   const textareaKeybindings = useTextareaKeybindings()
@@ -288,13 +420,18 @@ export function Prompt(props: PromptProps) {
   })
 
   createEffect(() => {
+    if (!input || input.isDestroyed) return
     if (props.disabled || vimState.isCopy()) {
       input.cursorColor = theme.backgroundElement
       input.showCursor = false
-    } else {
-      input.cursorColor = theme.text
-      input.showCursor = true
+      return
     }
+    const visual = vimState.isVisual()
+    const block = !props.disabled && vimEnabled() && store.mode === "normal" && vimState.mode() === "normal"
+    input.cursorColor = theme.text
+    input.showCursor = !(visual || block)
+    input.selectionBg = visual ? theme.secondary : undefined
+    input.selectionFg = visual ? selectedForeground(theme, theme.secondary) : undefined
   })
 
   createEffect((prev: boolean | undefined) => {
@@ -323,7 +460,7 @@ export function Prompt(props: PromptProps) {
       input.cursorStyle = { style: "block", blinking: false }
       return
     }
-    input.cursorStyle = { style: "block", blinking: true }
+    input.cursorStyle = { style: "line", blinking: true }
   })
 
   const lastUserMessage = createMemo(() => {
@@ -539,13 +676,19 @@ export function Prompt(props: PromptProps) {
     copyExit(scrollToBottom) {
       props.copy?.exit(scrollToBottom)
     },
+    copyExitPreserveScroll() {
+      props.copy?.exitPreserveScroll()
+    },
+    copyFocusInput() {
+      props.copy?.focusInput()
+    },
     copyYank() {
       const reg = props.copy?.yank()
       if (reg) setVimRegister(reg, true)
     },
     copyYankLine() {
       const reg = props.copy?.yankLine()
-      if (reg) vimState.setRegister(reg)
+      if (reg) setVimRegister(reg, true)
     },
     copyCopy() {
       return props.copy?.copy()
@@ -561,6 +704,9 @@ export function Prompt(props: PromptProps) {
     },
     copyWordPrev(big) {
       return props.copy?.wordPrev(big) ?? false
+    },
+    copyWordEnd(big) {
+      return props.copy?.wordEnd(big) ?? false
     },
     copyNextParagraph() {
       return props.copy?.nextParagraph() ?? false
@@ -688,6 +834,16 @@ export function Prompt(props: PromptProps) {
         enabled: () => !!promptSelectionText(),
         onSelect: async (dialog) => {
           if (!(await copyPromptSelection())) return
+          dialog.clear()
+        },
+      },
+      {
+        title: "Remove editor context",
+        value: "prompt.editor_context.clear",
+        category: "Prompt",
+        enabled: Boolean(editorContext()),
+        onSelect: (dialog) => {
+          dismissEditorContext()
           dialog.clear()
         },
       },
@@ -884,6 +1040,27 @@ export function Prompt(props: PromptProps) {
           ))
         },
       },
+      {
+        title: "Warp",
+        description: "Change the workspace for the session",
+        value: "workspace.set",
+        category: "Session",
+        enabled: Flag.OPENCODE_EXPERIMENTAL_WORKSPACES,
+        slash: {
+          name: "warp",
+        },
+        onSelect: (dialog) => {
+          void openWorkspaceSelect({
+            dialog,
+            sdk,
+            sync,
+            toast,
+            onSelect: (selection) => {
+              void warpSession(selection)
+            },
+          })
+        },
+      },
     ]
   })
 
@@ -956,17 +1133,11 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    const capture =
-      store.mode === "normal"
-        ? auto()?.visible
-          ? (["escape", "navigate", "submit", "tab"] as const)
-          : (["tab"] as const)
-        : undefined
-    input.traits = {
-      capture,
-      suspend: !!props.disabled || store.mode === "shell",
-      status: store.mode === "shell" ? "SHELL" : undefined,
-    }
+    input.traits = computePromptTraits({
+      mode: store.mode,
+      disabled: !!props.disabled,
+      autocompleteVisible: !!auto()?.visible,
+    })
   })
 
   function submitFromTextarea() {
@@ -1118,6 +1289,8 @@ export function Prompt(props: PromptProps) {
   ])
 
   async function submit() {
+    setWarpNotice(undefined)
+
     // IME: double-defer may fire before onContentChange flushes the last
     // composed character (e.g. Korean hangul) to the store, so read
     // plainText directly and sync before any downstream reads.
@@ -1126,6 +1299,7 @@ export function Prompt(props: PromptProps) {
       syncExtmarksWithPromptParts()
     }
     if (props.disabled) return false
+    if (workspaceCreating()) return false
     if (autocomplete?.visible) return false
     if (!store.prompt.input) return false
     const agent = local.agent.current()
@@ -1148,30 +1322,42 @@ export function Prompt(props: PromptProps) {
       dialog.replace(() => (
         <DialogWorkspaceUnavailable
           onRestore={() => {
-            dialog.replace(() => (
-              <DialogWorkspaceCreate
-                onSelect={(nextWorkspaceID) =>
-                  restoreWorkspaceSession({
-                    dialog,
-                    sdk,
-                    sync,
-                    project,
-                    toast,
-                    workspaceID: nextWorkspaceID,
-                    sessionID: props.sessionID!,
-                  })
-                }
-              />
-            ))
+            void openWorkspaceSelect({
+              dialog,
+              sdk,
+              sync,
+              toast,
+              onSelect: (selection) => {
+                void warpSession(selection)
+              },
+            })
+            return false
           }}
         />
       ))
       return false
     }
 
+    const variant = local.model.variant.current()
     let sessionID = props.sessionID
     if (sessionID == null) {
-      const res = await sdk.client.session.create({ workspace: props.workspaceID })
+      const workspace = workspaceSelection()
+      const workspaceID = iife(() => {
+        if (!workspace) return defaultWorkspaceID()
+        if (workspace.type === "none") return undefined
+        if (workspace.type === "existing") return workspace.workspaceID
+        return undefined
+      })
+
+      const res = await sdk.client.session.create({
+        workspace: workspaceID,
+        agent: agent.name,
+        model: {
+          providerID: selectedModel.providerID,
+          id: selectedModel.modelID,
+          variant,
+        },
+      })
 
       if (res.error) {
         console.log("Creating a session failed:", res.error)
@@ -1211,38 +1397,24 @@ export function Prompt(props: PromptProps) {
 
     // Capture mode before it gets reset
     const currentMode = store.mode
-    const variant = local.model.variant.current()
-    const editorSelection = fileContextEnabled() ? editor.selection() : undefined
-    const editorParts = editorSelection
-      ? [
-          {
-            id: PartID.ascending(),
-            type: "text" as const,
-            text: (() => {
-              const start = editorSelection.selection.start
-              const end = editorSelection.selection.end
-
-              let text = ""
-              if (start.line === end.line && start.character === end.character) {
-                text = `Note: The user opened the file "${editorSelection.filePath}".`
-              } else if (start.line === end.line) {
-                text = `Note: The user selected line ${start.line + 1} from "${editorSelection.filePath}". \`\`\`${editorSelection.text}\`\`\`\n\n`
-              } else {
-                text = `Note: The user selected lines ${start.line + 1} to ${end.line + 1} from "${editorSelection.filePath}". \`\`\`${editorSelection.text}\`\`\`\n\n`
-              }
-
-              return `<system-reminder>${text} This may or may not be relevant to the current task.</system-reminder>\n`
-            })(),
-            synthetic: true,
-            metadata: {
-              kind: "editor_context",
-              source: editorSelection.source ?? "editor",
-              filePath: editorSelection.filePath,
-              selection: editorSelection.selection,
+    const editorSelection = editorContext()
+    const editorParts =
+      editorSelection && editor.labelState() === "pending"
+        ? [
+            {
+              id: PartID.ascending(),
+              type: "text" as const,
+              text: formatEditorContext(editorSelection),
+              synthetic: true,
+              metadata: {
+                kind: "editor_context",
+                source: editorSelection.source ?? "editor",
+                filePath: editorSelection.filePath,
+                ranges: editorSelection.ranges,
+              },
             },
-          },
-        ]
-      : []
+          ]
+        : []
 
     if (store.mode === "shell") {
       void sdk.client.session.shell({
@@ -1305,7 +1477,7 @@ export function Prompt(props: PromptProps) {
           ],
         })
         .catch(() => {})
-      editor.clearSelection()
+      if (editorParts.length > 0) editor.markSelectionSent()
     }
     vimState.clearPending()
     history.append({
@@ -1322,13 +1494,15 @@ export function Prompt(props: PromptProps) {
     props.onSubmit?.()
 
     // temporary hack to make sure the message is sent
-    if (!props.sessionID)
+    if (!props.sessionID) {
+      if (editorParts.length > 0) editor.preserveSelectionFromNewSession()
       setTimeout(() => {
         route.navigate({
           type: "session",
           sessionID,
         })
       }, 50)
+    }
     input.clear()
     return true
   }
@@ -1462,6 +1636,39 @@ export function Prompt(props: PromptProps) {
     return `Ask anything... "${list()[store.placeholder % list().length]}"`
   })
 
+  const workspaceLabel = createMemo<
+    | { type: "new"; workspaceType: string }
+    | { type: "existing"; workspaceType: string; workspaceName: string; status?: WorkspaceStatus }
+    | undefined
+  >(() => {
+    const selected = workspaceSelection()
+    if (!selected) {
+      const workspaceID = defaultWorkspaceID()
+      if (props.sessionID || !workspaceID) return
+      const workspace = project.workspace.get(workspaceID)
+      return {
+        type: "existing",
+        workspaceType: workspace?.type ?? "unknown",
+        workspaceName: workspace?.name ?? workspaceID,
+        status: project.workspace.status(workspaceID) ?? "error",
+      }
+    }
+    if (selected.type === "none") return
+    if (props.sessionID && !workspaceCreating()) return
+    if (selected.type === "new") {
+      return {
+        type: "new",
+        workspaceType: selected.workspaceType,
+      }
+    }
+    return {
+      type: "existing",
+      workspaceType: selected.workspaceType,
+      workspaceName: selected.workspaceName,
+      status: selected.type === "existing" ? "connected" : undefined,
+    }
+  })
+
   const spinnerDef = createMemo(() => {
     const agent = local.agent.current()
     const color = agent ? local.agent.color(agent.name) : theme.border
@@ -1593,7 +1800,7 @@ export function Prompt(props: PromptProps) {
                   if (vimState.isCopy()) {
                     const active = vimState.isCopy()
                     vim.handleKey(e)
-                    if (active && !vimState.isCopy()) {
+                    if (active && !vimState.isCopy() && props.copy?.active()) {
                       const skipExit = vimState.skipExitOnModeChange()
                       const scrollToBottom = vimState.exitScrollToBottom()
                       vimState.setSkipExitOnModeChange(false)
@@ -1758,7 +1965,7 @@ export function Prompt(props: PromptProps) {
                   const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
                   if (
                     (lineCount >= 3 || pastedContent.length > 150) &&
-                    !sync.data.config.experimental?.disable_paste_summary
+                    kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary)
                   ) {
                     pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
                     return
@@ -1782,34 +1989,51 @@ export function Prompt(props: PromptProps) {
                     const render = input.render.bind(input)
                     input.render = (buffer, deltaTime) => {
                       render(buffer, deltaTime)
-                      if (!vimState.isVisual()) return
-                      const rows = emptyRows(
-                        input.plainText,
-                        input.editorView.getSelection(),
-                        input.lineInfo,
-                        input.scrollY,
-                        input.height,
-                      )
-                      if (!rows.length) return
-                      const bg = input.selectionBg ?? input.textColor
-                      const fg =
-                        input.selectionFg ??
-                        (input.backgroundColor.a > 0 ? input.backgroundColor : RGBA.fromInts(0, 0, 0))
-                      rows.forEach((row) => {
-                        buffer.setCell(input.x, input.y + row, " ", fg, bg)
-                      })
+                      const visual = vimState.isVisual()
+                      if (visual) {
+                        const rows = emptyRows(
+                          input.plainText,
+                          input.editorView.getSelection(),
+                          input.lineInfo,
+                          input.scrollY,
+                          input.height,
+                        )
+                        if (rows.length) {
+                          const bg = input.selectionBg ?? input.textColor
+                          const fg =
+                            input.selectionFg ??
+                            (input.backgroundColor.a > 0 ? input.backgroundColor : RGBA.fromInts(0, 0, 0))
+                          rows.forEach((row) => {
+                            buffer.setCell(input.x, input.y + row, " ", fg, bg)
+                          })
+                        }
+                      }
+                      const block = !props.disabled && vimEnabled() && store.mode === "normal" && vimState.mode() === "normal"
+                      if (!(visual || block)) return
+                      if (!input.focused) return
+                      if (input.visualCursor.visualRow < 0 || input.visualCursor.visualRow >= input.height) return
+                      if (input.visualCursor.visualCol < 0 || input.visualCursor.visualCol >= input.width) return
+                      // recolor the cursor cell in place; setCell would clobber the underlying glyph
+                      const cursorOffset =
+                        ((input.y + input.visualCursor.visualRow) * buffer.width +
+                          input.x +
+                          input.visualCursor.visualCol) *
+                        4
+                      buffer.buffers.fg.set(selectedForeground(theme, theme.text).buffer.subarray(0, 4), cursorOffset)
+                      buffer.buffers.bg.set(theme.text.buffer.subarray(0, 4), cursorOffset)
                     }
                   }
                   props.ref?.(ref)
                   setTimeout(() => {
+                    // setTimeout is a workaround and needs to be addressed properly
                     if (!input || input.isDestroyed) return
-                    input.cursorColor = theme.text
+                    input.cursorColor = props.disabled ? theme.backgroundElement : theme.text
                     syncScrollbar()
                   }, 0)
                 }}
                 onMouseDown={(r: MouseEvent) => r.target?.focus()}
                 focusedBackgroundColor={theme.backgroundElement}
-                cursorColor={theme.text}
+                cursorColor={props.disabled ? theme.backgroundElement : theme.text}
                 syntaxStyle={syntax()}
               />
               <Show when={showScrollbar()}>
@@ -1912,98 +2136,146 @@ export function Prompt(props: PromptProps) {
           />
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
-          <Show
-            when={status().type !== "idle"}
-            fallback={
+          <Switch>
+            <Match when={status().type !== "idle"}>
+              <box
+                flexDirection="row"
+                gap={1}
+                flexGrow={1}
+                justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
+              >
+                <box flexShrink={0} flexDirection="row" gap={1}>
+                  <VimIndicator />
+                  <box marginLeft={1}>
+                    <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
+                      <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
+                    </Show>
+                  </box>
+                  <box flexDirection="row" gap={1} flexShrink={0}>
+                    {(() => {
+                      const retry = createMemo(() => {
+                        const s = status()
+                        if (s.type !== "retry") return
+                        return s
+                      })
+                      const message = createMemo(() => {
+                        const r = retry()
+                        if (!r) return
+                        if (r.message.includes("exceeded your current quota") && r.message.includes("gemini"))
+                          return "gemini is way too hot right now"
+                        if (r.message.length > 80) return r.message.slice(0, 80) + "..."
+                        return r.message
+                      })
+                      const isTruncated = createMemo(() => {
+                        const r = retry()
+                        if (!r) return false
+                        return r.message.length > 120
+                      })
+                      const [seconds, setSeconds] = createSignal(0)
+                      onMount(() => {
+                        const timer = setInterval(() => {
+                          const next = retry()?.next
+                          if (next) setSeconds(Math.round((next - Date.now()) / 1000))
+                        }, 1000)
+
+                        onCleanup(() => {
+                          clearInterval(timer)
+                        })
+                      })
+                      const handleMessageClick = () => {
+                        const r = retry()
+                        if (!r) return
+                        if (isTruncated()) {
+                          void DialogAlert.show(dialog, "Retry Error", r.message)
+                        }
+                      }
+
+                      const retryText = () => {
+                        const r = retry()
+                        if (!r) return ""
+                        const baseMessage = message()
+                        const truncatedHint = isTruncated() ? " (click to expand)" : ""
+                        const duration = formatDuration(seconds())
+                        const retryInfo = ` [retrying ${duration ? `in ${duration} ` : ""}attempt #${r.attempt}]`
+                        return baseMessage + truncatedHint + retryInfo
+                      }
+
+                      return (
+                        <Show when={retry()}>
+                          <box onMouseUp={handleMessageClick}>
+                            <text fg={theme.error}>{retryText()}</text>
+                          </box>
+                        </Show>
+                      )
+                    })()}
+                  </box>
+                </box>
+                <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
+                  esc{" "}
+                  <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
+                    {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                  </span>
+                </text>
+              </box>
+            </Match>
+            <Match when={warpNotice()}>
+              {(notice) => (
+                <box flexDirection="row" gap={1}>
+                  <VimIndicator />
+                  <text fg={theme.accent}>{notice()}</text>
+                </box>
+              )}
+            </Match>
+            <Match when={workspaceLabel()}>
+              {(workspace) => (
+                <box flexDirection="row" gap={1}>
+                  <VimIndicator />
+                  <Show when={workspaceCreating()}>
+                    <Spinner color={theme.accent} />
+                  </Show>
+                  <text fg={workspaceCreating() ? theme.accent : theme.text}>
+                    {(() => {
+                      const item = workspace()
+                      if (item.type === "new") {
+                        if (workspaceCreating())
+                          return `Creating ${item.workspaceType}${".".repeat(workspaceCreatingDots())}`
+                        return (
+                          <>
+                            Workspace <span style={{ fg: theme.textMuted }}>(new {item.workspaceType})</span>
+                          </>
+                        )
+                      }
+                      return (
+                        <>
+                          Workspace <span style={{ fg: theme.textMuted }}>{item.workspaceName}</span>
+                        </>
+                      )
+                    })()}
+                  </text>
+                </box>
+              )}
+            </Match>
+            <Match when={true}>
               <box flexDirection="row" gap={1}>
                 <VimIndicator />
                 {props.hint ?? <text />}
               </box>
-            }
-          >
-            <box
-              flexDirection="row"
-              gap={1}
-              flexGrow={1}
-              justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
-            >
-              <box flexShrink={0} flexDirection="row" gap={1}>
-                <VimIndicator />
-                <box marginLeft={1}>
-                  <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                    <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
-                  </Show>
-                </box>
-                <box flexDirection="row" gap={1} flexShrink={0}>
-                  {(() => {
-                    const retry = createMemo(() => {
-                      const s = status()
-                      if (s.type !== "retry") return
-                      return s
-                    })
-                    const message = createMemo(() => {
-                      const r = retry()
-                      if (!r) return
-                      if (r.message.includes("exceeded your current quota") && r.message.includes("gemini"))
-                        return "gemini is way too hot right now"
-                      if (r.message.length > 80) return r.message.slice(0, 80) + "..."
-                      return r.message
-                    })
-                    const isTruncated = createMemo(() => {
-                      const r = retry()
-                      if (!r) return false
-                      return r.message.length > 120
-                    })
-                    const [seconds, setSeconds] = createSignal(0)
-                    onMount(() => {
-                      const timer = setInterval(() => {
-                        const next = retry()?.next
-                        if (next) setSeconds(Math.round((next - Date.now()) / 1000))
-                      }, 1000)
-
-                      onCleanup(() => {
-                        clearInterval(timer)
-                      })
-                    })
-                    const handleMessageClick = () => {
-                      const r = retry()
-                      if (!r) return
-                      if (isTruncated()) {
-                        void DialogAlert.show(dialog, "Retry Error", r.message)
-                      }
-                    }
-
-                    const retryText = () => {
-                      const r = retry()
-                      if (!r) return ""
-                      const baseMessage = message()
-                      const truncatedHint = isTruncated() ? " (click to expand)" : ""
-                      const duration = formatDuration(seconds())
-                      const retryInfo = ` [retrying ${duration ? `in ${duration} ` : ""}attempt #${r.attempt}]`
-                      return baseMessage + truncatedHint + retryInfo
-                    }
-
-                    return (
-                      <Show when={retry()}>
-                        <box onMouseUp={handleMessageClick}>
-                          <text fg={theme.error}>{retryText()}</text>
-                        </box>
-                      </Show>
-                    )
-                  })()}
-                </box>
-              </box>
-              <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
-                esc{" "}
-                <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                  {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
-                </span>
-              </text>
-            </box>
-          </Show>
+            </Match>
+          </Switch>
           <Show when={status().type !== "retry" && !mini()}>
             <box gap={2} flexDirection="row">
-              <Show when={editorFileLabelDisplay()}>{(file) => <text fg={theme.secondary}>{file()}</text>}</Show>
+              <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
+                {(file) => (
+                  <text
+                    fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}
+                    onMouseOver={() => setEditorContextHover(true)}
+                    onMouseOut={() => setEditorContextHover(false)}
+                    onMouseUp={dismissEditorContext}
+                  >
+                    {editorContextHover() ? `x ${file()}` : file()}
+                  </text>
+                )}
+              </Show>
               <Switch>
                 <Match when={store.mode === "normal"}>
                   <Show when={local.model.variant.list().length > 0}>
