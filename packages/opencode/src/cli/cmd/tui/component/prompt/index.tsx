@@ -1800,7 +1800,7 @@ export function Prompt(props: PromptProps) {
                   if (vimState.isCopy()) {
                     const active = vimState.isCopy()
                     vim.handleKey(e)
-                    if (active && !vimState.isCopy() && props.copy?.active()) {
+                    if (active && vimState.mode() === "normal" && props.copy?.active()) {
                       const skipExit = vimState.skipExitOnModeChange()
                       const scrollToBottom = vimState.exitScrollToBottom()
                       vimState.setSkipExitOnModeChange(false)

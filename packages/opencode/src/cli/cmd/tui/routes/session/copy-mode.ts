@@ -307,8 +307,8 @@ export function createCopyMode(input: {
   function snapshotScroll() {
     const scr = input.scroll()
     if (!scr) return undefined
-    const scrollY = scr.scrollTop
-    const atBottom = scrollY + scr.height >= scr.scrollHeight - 1
+    const scrollY = scr.scrollTop ?? scr.y ?? 0
+    const atBottom = scr.scrollHeight > scr.height && scrollY + scr.height >= scr.scrollHeight - 1
     // Children .y values are viewport-relative, so use scr.y (≈0) to find visible ones
     const children = scr.getChildren().toSorted((a, b) => a.y - b.y)
     const ref = children.find(c => c.id && c.y + c.height > scr.y)
@@ -326,11 +326,14 @@ export function createCopyMode(input: {
       const child = scr.getChildren().find(c => c.id === snap.id)
       if (!child) return false
       const oldAbsolute = snap.scrollY + snap.childY
-      const newAbsolute = scr.scrollTop + child.y
+      const newAbsolute = (scr.scrollTop ?? scr.y ?? 0) + child.y
       const contentDelta = newAbsolute - oldAbsolute
       const cappedDelta = Math.max(-scr.height, Math.min(scr.height, contentDelta))
       if (contentDelta !== 0) {
-        if (typeof scr.scrollTo === "function") scr.scrollTo(snap.atBottom ? scr.scrollHeight : snap.scrollY + cappedDelta)
+        if (snap.atBottom) {
+          if (typeof scr.scrollTo === "function") scr.scrollTo(scr.scrollHeight)
+          else scr.scrollBy(scr.scrollHeight - (scr.scrollTop ?? scr.y ?? 0))
+        } else if (typeof scr.scrollTo === "function") scr.scrollTo(snap.scrollY + cappedDelta)
         else scr.scrollBy(cappedDelta)
       }
       return true
@@ -394,11 +397,45 @@ export function createCopyMode(input: {
     if (current.y > bottom) scr.scrollBy(current.y - bottom)
   }
 
-  function enterTarget(list: CopyRow[]) {
+  function pickVisibleTarget(list: CopyRow[], preferBottom = false) {
+    const scr = input.scroll()
+    const top = scr.y
+    const bottom = scr.y + scr.height - 1
+    const visible = list.filter((x) => x.y >= top && x.y <= bottom)
+    if (!visible.length) return 0
+    if (preferBottom) return list.indexOf(visible[visible.length - 1]!)
+    const midY = top + (bottom - top) / 2
+    return list.indexOf(visible.reduce((a, b) => (Math.abs(a.y - midY) < Math.abs(b.y - midY) ? a : b)))
+  }
+
+  function hasVisibleRow(list: CopyRow[], idx: number) {
+    const row = list[idx]
+    if (!row) return false
+    const scr = input.scroll()
+    const top = scr.y
+    const bottom = scr.y + scr.height - 1
+    return row.y >= top && row.y <= bottom
+  }
+
+  function matchingTarget(list: CopyRow[], target: CopyRow) {
+    const exact = list.map((row, idx) => ({ row, idx })).filter((x) => x.row.key === target.key)
+    if (exact.length) return exact.reduce((a, b) => (Math.abs(a.row.y - target.y) < Math.abs(b.row.y - target.y) ? a : b)).idx
+    const candidates = list
+      .map((row, idx) => ({ row, idx }))
+      .filter((x) => x.row.id === target.id && x.row.kind === target.kind && x.row.role === target.role)
+    if (!candidates.length) return -1
+    return candidates.reduce((a, b) => (Math.abs(a.row.line - target.line) < Math.abs(b.row.line - target.line) ? a : b)).idx
+  }
+
+  function enterTarget(list: CopyRow[], preferVisible = false, preferBottom = false, visibleTarget?: CopyRow) {
     const previous = state()
-    if (previous.idx < 0) {
-      const idx = list.findLastIndex((x) => x.role === "assistant")
-      const target = idx >= 0 ? idx : list.length - 1
+    if (visibleTarget) {
+      const idx = matchingTarget(list, visibleTarget)
+      const row = list[idx]
+      if (row) return { idx, col: copyMin(row), stick: "first" as const }
+    }
+    if (preferVisible || previous.idx < 0) {
+      const target = pickVisibleTarget(list, preferBottom)
       const row = list[target]
       if (!row) return
       return { idx: target, col: copyMin(row), stick: "first" as const }
@@ -418,6 +455,35 @@ export function createCopyMode(input: {
 
   function enter() {
     const init = () => {
+      const initial = state().idx < 0
+      const beforeRows = rows()
+      const previousVisible = hasVisibleRow(beforeRows, state().idx)
+      const preEnterTarget = (preferBottom = false) => beforeRows[pickVisibleTarget(beforeRows, preferBottom)]
+      const selectTarget = (preferVisible = false, preferBottom = false, usePreEnterTarget = false, ensureVisible = true) => {
+        const list = rows()
+        if (!list.length) {
+          setState({ ...empty })
+          return false
+        }
+        const target = enterTarget(
+          list,
+          preferVisible,
+          preferBottom,
+          usePreEnterTarget && (initial || !previousVisible) ? preEnterTarget(preferBottom) : undefined,
+        )
+        if (!target) return false
+        setState((s) => ({
+          ...s,
+          col: target.col,
+          stick: target.stick,
+          visual: undefined,
+          anchor: undefined,
+        }))
+        if (ensureVisible) sync(target.idx)
+        else setState((s) => ({ ...s, active: true, idx: target.idx }))
+        return true
+      }
+
       if (!unified()) {
         const snap = snapshotScroll()
         batch(() => {
@@ -425,29 +491,17 @@ export function createCopyMode(input: {
           // Activate first so rows() excludes reasoning (matches what row memo will see)
           setState((s) => ({ ...s, active: true }))
         })
-        compensateScroll(snap, () => setTimeout(keepCursorVisible, 0))
+        selectTarget(initial || !previousVisible, snap?.atBottom, true, false)
+        compensateScroll(snap, () => {
+          if (!selectTarget(initial || !previousVisible, snap?.atBottom, true)) setTimeout(() => init(), 0)
+        })
+        return true
       } else {
         setState((s) => ({ ...s, active: true }))
       }
 
       // Pick target from rows() AFTER active is true (reasoning excluded)
-      const list = rows()
-      if (!list.length) {
-        setState({ ...empty })
-        return false
-      }
-      const target = enterTarget(list)
-      if (!target) return false
-      setState((s) => ({
-        ...s,
-        col: target.col,
-        stick: target.stick,
-        visual: undefined,
-        anchor: undefined,
-      }))
-      sync(target.idx)
-      keepCursorVisible()
-      return true
+      return selectTarget(initial, false, true)
     }
     if (init()) return
     setTimeout(() => init(), 0)

@@ -4510,6 +4510,64 @@ describe("copy mode", () => {
     return cm
   }
 
+  test("entering copy mode keeps a target from rows visible before diff unification", () => {
+    let offset = 20
+    let cm: ReturnType<typeof createCopyMode> | undefined
+    const child = (id: string, absoluteY: number) => ({
+      id: `text-${id}`,
+      y: absoluteY - offset,
+      height: 1,
+      gutter: { calculateWidth: () => 4 },
+      getChildren: () => [
+        {
+          _y: 0,
+          plainText: id,
+          lineInfo: {
+            lineSources: [0],
+            lineStartCols: [0],
+            lineWidthCols: [Bun.stringWidth(id)],
+            lineWraps: [0],
+          },
+        },
+      ],
+    })
+    const scroll = {
+      y: 0,
+      height: 3,
+      width: 80,
+      scrollHeight: 80,
+      get scrollTop() {
+        return offset
+      },
+      getChildren: () =>
+        cm?.unified() ? [child("hidden", 24), child("visible", 40)] : [child("visible", 20), child("hidden", 50)],
+      scrollBy(delta: number) {
+        offset += delta
+      },
+      scrollTo(next: number) {
+        offset = next
+      },
+    } as unknown as ScrollBoxRenderable
+    cm = createCopyMode({
+      scroll: () => scroll,
+      messages: () => [{ id: "message", role: "assistant" }],
+      parts: () =>
+        [
+          { id: "visible", type: "text", text: "visible" },
+          { id: "hidden", type: "text", text: "hidden" },
+        ] as Part[],
+      thinking: () => false,
+      details: () => false,
+      session: () => "session",
+      toBottom() {},
+    })
+
+    cm.prompt.enter()
+
+    expect(cm.row()?.id).toBe("text-visible")
+    expect(offset).toBe(38)
+  })
+
   test("highlights final wrapped row using its visual slice", () => {
     const child = {
       id: "text-part",
@@ -5044,8 +5102,8 @@ describe("copy mode", () => {
       cm.prompt.visual("line")
 
       expect(cm.state().visual).toBe("line")
-      expect(cm.state().anchor).toEqual({ idx: 2, col: 3 })
-      expect(cm.state().idx).toBe(1)
+      expect(cm.state().anchor).toEqual({ idx: 1, col: 3 })
+      expect(cm.state().idx).toBe(0)
       dispose()
     })
   })
