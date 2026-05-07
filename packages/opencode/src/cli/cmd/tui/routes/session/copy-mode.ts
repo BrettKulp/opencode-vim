@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, type Accessor } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, type Accessor } from "solid-js"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import type { Part } from "@opencode-ai/sdk/v2"
 import {
@@ -59,6 +59,7 @@ export function createCopyMode(input: {
   toBottom: () => void
 }) {
   const [state, setState] = createSignal<CopyState>({ ...empty })
+  const [unified, setUnified] = createSignal(false)
 
   // --- row building ---
 
@@ -289,7 +290,7 @@ export function createCopyMode(input: {
   // --- scroll compensation ---
   // When entering/exiting copy mode, diffs switch between split/unified view,
   // changing content heights. We snapshot a reference child before the toggle,
-  // then poll until layout has actually changed and compensate the scroll delta.
+  // then compensate the scroll delta.
 
   let compensateTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -317,20 +318,18 @@ export function createCopyMode(input: {
       const oldAbsolute = snap.scrollY + snap.childY
       const newAbsolute = scr.scrollTop + child.y
       const contentDelta = newAbsolute - oldAbsolute
-      if (contentDelta === 0) return false
-      const targetY = snap.atBottom ? scr.scrollHeight : snap.scrollY + contentDelta
-      scr.scrollTo(targetY)
+      const cappedDelta = Math.max(-scr.height, Math.min(scr.height, contentDelta))
+      if (contentDelta !== 0) scr.scrollTo(snap.atBottom ? scr.scrollHeight : snap.scrollY + cappedDelta)
       return true
     }
 
-    // Try synchronously first — Solid renders are synchronous so layout
-    // may already reflect the new state
+    // Try synchronously first; Solid renders may already have updated layout.
     if (tryCompensate()) {
       afterSettle?.()
       return
     }
 
-    // Fall back to polling if layout hasn't updated yet
+    // Fall back to polling if child not found yet (destroyed/recreated)
     let attempts = 0
     const poll = () => {
       attempts++
@@ -383,30 +382,45 @@ export function createCopyMode(input: {
     return idx >= 0 ? idx : list.length - 1
   }
 
+  function keepCursorVisible() {
+    const scr = input.scroll()
+    if (!scr || scr.isDestroyed) return
+    const current = row()
+    if (!current) return
+    const top = scr.y
+    const bottom = scr.y + scr.height - 1
+    if (current.y < top) {
+      scr.scrollBy(current.y - top)
+      return
+    }
+    if (current.y > bottom) scr.scrollBy(current.y - bottom)
+  }
+
   function enter() {
     const init = () => {
       const scr = input.scroll()
-      const list = rows()
-      if (!list.length) return false
+      if (!unified()) {
+        const snap = snapshotScroll()
+        batch(() => {
+          setUnified(true)
+          // Activate first so rows() excludes reasoning (matches what row memo will see)
+          setState((s) => ({ ...s, active: true, idx: 0, col: 0, stick: "first" as const }))
+        })
+        compensateScroll(snap, () => setTimeout(keepCursorVisible, 0))
+      } else {
+        setState((s) => ({ ...s, active: true, idx: 0, col: 0, stick: "first" as const }))
+      }
 
-      // Pick initial target from currently visible rows BEFORE activating
+      // Pick target from rows() AFTER active is true (reasoning excluded)
+      const list = rows()
+      if (!list.length) {
+        setState({ ...empty })
+        return false
+      }
       const target = pickVisibleTarget(list, scr)
       const row = list[target]
-
-      const snap = snapshotScroll()
-      setState((s) => ({ ...s, active: true, idx: target, col: copyMin(row), stick: "first" as const }))
-      compensateScroll(snap, () => {
-        // After compensation, re-pick in case layout shifted
-        const postScr = input.scroll()
-        if (!postScr || postScr.isDestroyed) return
-        const postList = rows()
-        if (!postList.length) return
-        const newTarget = pickVisibleTarget(postList, postScr)
-        const newRow = postList[newTarget]
-        if (newRow) {
-          setState((s) => ({ ...s, idx: newTarget, col: copyMin(newRow), stick: "first" as const }))
-        }
-      })
+      setState((s) => ({ ...s, idx: target, col: copyMin(row), stick: "first" as const }))
+      keepCursorVisible()
       return true
     }
     if (init()) return
@@ -415,13 +429,19 @@ export function createCopyMode(input: {
 
   function exit(scrollToBottom?: boolean) {
     if (scrollToBottom === undefined || scrollToBottom) {
-      setState({ ...empty })
+      batch(() => {
+        setState({ ...empty })
+        setUnified(false)
+      })
       input.toBottom()
       return
     }
     // Exit without scrolling — keep current scroll position
     const snap = snapshotScroll()
-    setState((s) => ({ ...s, active: false, visual: undefined, anchor: undefined }))
+    batch(() => {
+      setState((s) => ({ ...s, active: false, visual: undefined, anchor: undefined }))
+      setUnified(false)
+    })
     compensateScroll(snap)
   }
 
@@ -749,6 +769,7 @@ export function createCopyMode(input: {
     row,
     highlights,
     active: () => state().active,
+    unified,
     clamp,
     state,
   }

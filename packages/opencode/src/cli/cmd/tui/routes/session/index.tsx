@@ -1071,7 +1071,7 @@ export function Session() {
           return contentWidth()
         },
         sessionID: route.sessionID,
-        copyActive: cm.active,
+        copyActive: cm.unified,
         conceal,
         showThinking,
         showTimestamps,
