@@ -16,7 +16,8 @@ export function vimWindowNavigation(event: VimEvent, state: ReturnType<typeof cr
       state.clearPending()
       return { action: "down" as VimWindowNavigation, handled: true }
     }
-
+    
+    state.clearPending()
     return { handled: false }
   }
 

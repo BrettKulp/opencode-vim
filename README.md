@@ -95,7 +95,7 @@ Works similarly to tmux copy mode within opencode tui.
 - Navigate with `h` `j` `k` `l` or arrow keys (`Left` `Down` `Up` `Right`).
 - `H` / `M` / `L` jump to the top / middle / bottom of the viewport.
 - Press `v` / `V` to start character-wise or line-wise selection.
-- `y` yanks visual selection to the vim register (stays in copy mode).
+- `y` yanks visual selection to the vim register and exits copy mode.
 - `yy` yanks the current line to the vim register with a brief highlight flash.
 - `Y` yanks to the vim register and scrolls to the bottom.
 - `Enter` copies to the system clipboard.

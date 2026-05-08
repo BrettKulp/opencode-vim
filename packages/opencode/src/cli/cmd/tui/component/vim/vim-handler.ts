@@ -1038,7 +1038,7 @@ export function createVimHandler(input: {
       return true
     }
 
-    if (key === "w" && hasModifier(event)) {
+    if (key === "w" && event.ctrl) {
       input.state.setPending("w")
       event.preventDefault()
       return true
@@ -1147,21 +1147,24 @@ export function createVimHandler(input: {
       return true
     }
 
-    if (input.state.pending() === "w" && key === "j") {
-      if (input.copyIsVisual?.()) {
-        input.copyExitVisual?.()
+    if (input.state.pending() === "w") {
+      if (key === "j") {
+        if (input.copyIsVisual?.()) {
+          input.copyExitVisual?.()
+          event.preventDefault()
+          return true
+        }
+        input.state.setSkipExitOnModeChange(true)
+        input.state.setExitScrollToBottom(false)
+        input.state.setMode("normal")
+        input.copyExit?.(false)
         event.preventDefault()
         return true
       }
-      input.state.setSkipExitOnModeChange(true)
-      input.state.setExitScrollToBottom(false)
-      input.state.setMode("normal")
-      input.copyExit?.(false)
-      event.preventDefault()
-      return true
+      input.state.clearPending()
     }
 
-    if (key === "w" && hasModifier(event)) {
+    if (key === "w" && event.ctrl) {
       input.state.setPending("w")
       event.preventDefault()
       return true

@@ -166,7 +166,7 @@ function createHandler(
   const [mode, setMode] = createSignal<"normal" | "insert" | "replace" | "visual" | "visual-line" | "copy">(
     options?.mode ?? "normal",
   )
-  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "r" | "vr">("")
+  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "w" | "r" | "vr">("")
   const [lastFind, setLastFind] = createSignal<{ char: string; forward: boolean; till: boolean } | null>(null)
   const [register, setRegister] = createSignal<{ text: string; linewise: boolean } | null>(null)
   const [anchor, setAnchor] = createSignal<number | null>(null)
@@ -2991,6 +2991,32 @@ describe("vim motion handler", () => {
     expect(ctx.state.pending()).toBe("")
   })
 
+  test("ctrl+w non-window key clears pending w and key is handled in normal mode", () => {
+    const ctx = createHandler("abc")
+    ctx.textarea.cursorOffset = 1
+
+    const ctrlW = createEvent("w", { ctrl: true })
+    expect(ctx.handler.handleKey(ctrlW.event)).toBe(true)
+    expect(ctrlW.prevented()).toBe(true)
+    expect(ctx.state.pending()).toBe("w")
+
+    const x = createEvent("x")
+    expect(ctx.handler.handleKey(x.event)).toBe(true)
+    expect(x.prevented()).toBe(true)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.textarea.plainText).toBe("ac")
+  })
+
+  test("alt/meta/super+w does not set pending w in normal mode", () => {
+    const ctx = createHandler("abc")
+
+    expect(ctx.handler.handleKey(createEvent("w", { meta: true }).event)).toBe(false)
+    expect(ctx.state.pending()).toBe("")
+
+    expect(ctx.handler.handleKey(createEvent("w", { super: true }).event)).toBe(false)
+    expect(ctx.state.pending()).toBe("")
+  })
+
   test("ctrl scroll keys trigger actions", () => {
     const ctx = createHandler("abc")
     const keys: Array<[string, VimScroll]> = [
@@ -5552,6 +5578,68 @@ describe("copy mode", () => {
     const ctx = createHandler("abc", { mode: "copy" })
     ctx.handler.handleKey(createEvent("w", { ctrl: true }).event)
     expect(ctx.state.pending()).toBe("w")
+  })
+
+  test("ctrl+w non-window key clears pending w in copy mode", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+
+    const ctrlW = createEvent("w", { ctrl: true })
+    expect(ctx.handler.handleKey(ctrlW.event)).toBe(true)
+    expect(ctrlW.prevented()).toBe(true)
+    expect(ctx.state.pending()).toBe("w")
+
+    const x = createEvent("x")
+    expect(ctx.handler.handleKey(x.event)).toBe(true)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.state.mode()).toBe("copy")
+  })
+
+  test("ctrl+w then H clears pending and jumps to high in copy mode", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+
+    ctx.handler.handleKey(createEvent("w", { ctrl: true }).event)
+    expect(ctx.state.pending()).toBe("w")
+
+    ctx.handler.handleKey(createEvent("H").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyJumps).toContain("high")
+    expect(ctx.state.mode()).toBe("copy")
+  })
+
+  test("ctrl+w then M clears pending and jumps to middle in copy mode", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+
+    ctx.handler.handleKey(createEvent("w", { ctrl: true }).event)
+    expect(ctx.state.pending()).toBe("w")
+
+    ctx.handler.handleKey(createEvent("M").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyJumps).toContain("middle")
+    expect(ctx.state.mode()).toBe("copy")
+  })
+
+  test("ctrl+w then L clears pending and jumps to low in copy mode", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+
+    ctx.handler.handleKey(createEvent("w", { ctrl: true }).event)
+    expect(ctx.state.pending()).toBe("w")
+
+    ctx.handler.handleKey(createEvent("L").event)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.copyJumps).toContain("low")
+    expect(ctx.state.mode()).toBe("copy")
+  })
+
+  test("meta/super+w does not set pending w in copy mode", () => {
+    const ctx = createHandler("abc", { mode: "copy" })
+
+    expect(ctx.handler.handleKey(createEvent("w", { meta: true }).event)).toBe(false)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.state.mode()).toBe("copy")
+
+    expect(ctx.handler.handleKey(createEvent("w", { super: true }).event)).toBe(false)
+    expect(ctx.state.pending()).toBe("")
+    expect(ctx.state.mode()).toBe("copy")
   })
 })
 
