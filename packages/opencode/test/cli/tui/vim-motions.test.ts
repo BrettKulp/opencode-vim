@@ -172,7 +172,7 @@ function createHandler(
   const [mode, setMode] = createSignal<"normal" | "insert" | "replace" | "visual" | "visual-line" | "copy">(
     options?.mode ?? "normal",
   )
-  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "w" | "r" | "vr">("")
+  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "w" | "r" | "vr" | "df" | "dF" | "dt" | "dT">("")
   const [lastFind, setLastFind] = createSignal<{ char: string; forward: boolean; till: boolean } | null>(null)
   const [register, setRegister] = createSignal<{ text: string; linewise: boolean } | null>(null)
   const [anchor, setAnchor] = createSignal<number | null>(null)
@@ -2788,6 +2788,109 @@ describe("vim motion handler", () => {
 
     ctx.handler.handleKey(createEvent(",").event)
     expect(ctx.textarea.cursorOffset).toBe(3)
+  })
+
+  test("df deletes forward including found char", () => {
+    const ctx = createHandler("hello world")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("d").event)
+    expect(ctx.state.pending()).toBe("d")
+
+    ctx.handler.handleKey(createEvent("f").event)
+    expect(ctx.state.pending()).toBe("df")
+
+    const o = createEvent("o")
+    expect(ctx.handler.handleKey(o.event)).toBe(true)
+    expect(o.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe(" world")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("dF deletes backward including found char", () => {
+    const ctx = createHandler("hello world")
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("d").event)
+    expect(ctx.state.pending()).toBe("d")
+
+    ctx.handler.handleKey(createEvent("F").event)
+    expect(ctx.state.pending()).toBe("dF")
+
+    const o = createEvent("o")
+    expect(ctx.handler.handleKey(o.event)).toBe(true)
+    expect(o.prevented()).toBe(true)
+    // nearest 'o' backward from 8 is at index 7
+    expect(ctx.textarea.plainText).toBe("hello wld")
+    expect(ctx.textarea.cursorOffset).toBe(7)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("dt deletes forward up to found char", () => {
+    const ctx = createHandler("hello world")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("t").event)
+    expect(ctx.state.pending()).toBe("dt")
+
+    const o = createEvent("o")
+    expect(ctx.handler.handleKey(o.event)).toBe(true)
+    expect(o.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("o world")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("dT deletes backward from after found char", () => {
+    const ctx = createHandler("abcxdefgh")
+    ctx.textarea.cursorOffset = 6
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("T").event)
+    expect(ctx.state.pending()).toBe("dT")
+
+    // 'x' is at index 3, till puts cursor at 4, deletes from 4 to 7 (start+1=7)
+    const x = createEvent("x")
+    expect(ctx.handler.handleKey(x.event)).toBe(true)
+    expect(x.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("abcxgh")
+    expect(ctx.textarea.cursorOffset).toBe(4)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("df char not found leaves text unchanged", () => {
+    const ctx = createHandler("hello")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("f").event)
+    ctx.handler.handleKey(createEvent("z").event)
+    expect(ctx.textarea.plainText).toBe("hello")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+  })
+
+  test("df populates register with deleted text", () => {
+    const ctx = createHandler("hello world")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("f").event)
+    ctx.handler.handleKey(createEvent("o").event)
+    expect(ctx.state.register()).toEqual({ text: "hello", linewise: false })
+  })
+
+  test("df with unknown motion clears pending", () => {
+    const ctx = createHandler("hello")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("f").event)
+    expect(ctx.state.pending()).toBe("df")
+
+    ctx.handler.handleKey(createEvent("escape").event)
+    expect(ctx.state.pending()).toBe("")
   })
 
   test("yy yanks current line into register", () => {
@@ -5954,7 +6057,7 @@ describe("copy mode cursor state", () => {
     const textarea = createTextarea("")
     const [enabled] = createSignal(true)
     const [mode, setMode] = createSignal<"normal" | "insert" | "replace" | "visual" | "visual-line" | "copy">("copy")
-    const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "w" | "r" | "vr">("")
+  const [pending, setPending] = createSignal<"" | "c" | "d" | "g" | "z" | "f" | "F" | "t" | "T" | "y" | "w" | "r" | "vr" | "df" | "dF" | "dt" | "dT">("")
     const [lastFind, setLastFind] = createSignal<{ char: string; forward: boolean; till: boolean } | null>(null)
     const [register, setRegister] = createSignal<{ text: string; linewise: boolean } | null>(null)
     const [anchor, setAnchor] = createSignal<number | null>(null)
