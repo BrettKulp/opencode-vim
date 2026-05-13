@@ -376,6 +376,37 @@ export function createVimHandler(input: {
       return true
     }
 
+    const changeFind = input.state.pending()
+    if (changeFind === "cf" || changeFind === "cF" || changeFind === "ct" || changeFind === "cT") {
+      if (isPrintable(event) && !hasModifier(event)) {
+        const forward = changeFind === "cf" || changeFind === "ct"
+        const till = changeFind === "ct" || changeFind === "cT"
+        const textarea = input.textarea()
+        const start = textarea.cursorOffset
+        findChar(textarea, key, forward, till)
+        if (textarea.cursorOffset !== start) {
+          const span = forward
+            ? { start, end: textarea.cursorOffset + 1 }
+            : { start: textarea.cursorOffset, end: start + 1 }
+          const text = textarea.plainText.slice(span.start, span.end)
+          edit(() => {
+            deleteSpan(textarea, span)
+            if (text) setRegister({ text, linewise: false })
+            textarea.cursorOffset = Math.min(start, textarea.cursorOffset)
+          })
+        }
+        input.state.setLastFind({ char: key, forward, till })
+        input.state.setMode("insert")
+        input.state.clearPending()
+        event.preventDefault()
+        return true
+      }
+
+      input.state.clearPending()
+      event.preventDefault()
+      return true
+    }
+
     const scroll = vimScroll(event)
     if (scroll) {
       input.state.clearPending()
@@ -620,6 +651,30 @@ export function createVimHandler(input: {
       }
 
       if (matchingBracketOperator(key, "c")) {
+        event.preventDefault()
+        return true
+      }
+
+      if (key === "t" && !event.shift && !hasModifier(event)) {
+        input.state.setPending("ct")
+        event.preventDefault()
+        return true
+      }
+
+      if (isShifted(event, "t") && !hasModifier(event)) {
+        input.state.setPending("cT")
+        event.preventDefault()
+        return true
+      }
+
+      if (key === "f" && !event.shift && !hasModifier(event)) {
+        input.state.setPending("cf")
+        event.preventDefault()
+        return true
+      }
+
+      if (isShifted(event, "f") && !hasModifier(event)) {
+        input.state.setPending("cF")
         event.preventDefault()
         return true
       }
