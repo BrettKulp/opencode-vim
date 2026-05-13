@@ -354,7 +354,8 @@ export function createVimHandler(input: {
         const till = deleteFind === "dt" || deleteFind === "dT"
         const textarea = input.textarea()
         const start = textarea.cursorOffset
-        findChar(textarea, key, forward, till)
+        const char = value(event)
+        findChar(textarea, char, forward, till)
         if (textarea.cursorOffset !== start) {
           const span = forward
             ? { start, end: textarea.cursorOffset + 1 }
@@ -366,7 +367,7 @@ export function createVimHandler(input: {
             textarea.cursorOffset = Math.min(start, textarea.cursorOffset)
           })
         }
-        input.state.setLastFind({ char: key, forward, till })
+        input.state.setLastFind({ char, forward, till })
         input.state.clearPending()
         event.preventDefault()
         return true
@@ -383,7 +384,8 @@ export function createVimHandler(input: {
         const till = changeFind === "ct" || changeFind === "cT"
         const textarea = input.textarea()
         const start = textarea.cursorOffset
-        findChar(textarea, key, forward, till)
+        const char = value(event)
+        findChar(textarea, char, forward, till)
         if (textarea.cursorOffset !== start) {
           const span = forward
             ? { start, end: textarea.cursorOffset + 1 }
@@ -395,7 +397,7 @@ export function createVimHandler(input: {
             textarea.cursorOffset = Math.min(start, textarea.cursorOffset)
           })
         }
-        input.state.setLastFind({ char: key, forward, till })
+        input.state.setLastFind({ char, forward, till })
         input.state.setMode("insert")
         input.state.clearPending()
         event.preventDefault()
@@ -841,8 +843,9 @@ export function createVimHandler(input: {
       if (isPrintable(event) && !hasModifier(event)) {
         const forward = find === "f" || find === "t"
         const till = find === "t" || find === "T"
-        findChar(input.textarea(), key, forward, till)
-        input.state.setLastFind({ char: key, forward, till })
+        const char = value(event)
+        findChar(input.textarea(), char, forward, till)
+        input.state.setLastFind({ char, forward, till })
         input.state.clearPending()
         event.preventDefault()
         return true

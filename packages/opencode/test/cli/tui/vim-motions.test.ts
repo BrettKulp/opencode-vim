@@ -3000,6 +3000,190 @@ describe("vim motion handler", () => {
     expect(ctx.state.pending()).toBe("")
   })
 
+  test("f finds uppercase char forward", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("f").event)
+    expect(ctx.state.pending()).toBe("f")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.cursorOffset).toBe(6)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("F finds uppercase char backward", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("F").event)
+    expect(ctx.state.pending()).toBe("F")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(ctx.textarea.cursorOffset).toBe(6)
+  })
+
+  test("t stops before uppercase char", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("t").event)
+    expect(ctx.state.pending()).toBe("t")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.cursorOffset).toBe(5)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("T stops after uppercase char backward", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("T").event)
+    expect(ctx.state.pending()).toBe("T")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(ctx.textarea.cursorOffset).toBe(7)
+  })
+
+  test("df deletes forward including uppercase char", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("f").event)
+    expect(ctx.state.pending()).toBe("df")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("orld")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("dF deletes backward including uppercase char", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("F").event)
+    expect(ctx.state.pending()).toBe("dF")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("Hello ld")
+    expect(ctx.textarea.cursorOffset).toBe(6)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("dt deletes forward up to uppercase char", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("t").event)
+    expect(ctx.state.pending()).toBe("dt")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("World")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("dT deletes backward from after uppercase char", () => {
+    const ctx = createHandler("abcWdefgh")
+    ctx.textarea.cursorOffset = 6
+
+    ctx.handler.handleKey(createEvent("d").event)
+    ctx.handler.handleKey(createEvent("T").event)
+    expect(ctx.state.pending()).toBe("dT")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("abcWgh")
+    expect(ctx.textarea.cursorOffset).toBe(4)
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("cf changes forward including uppercase char", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("c").event)
+    ctx.handler.handleKey(createEvent("f").event)
+    expect(ctx.state.pending()).toBe("cf")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("orld")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.mode()).toBe("insert")
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("cF changes backward including uppercase char", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 8
+
+    ctx.handler.handleKey(createEvent("c").event)
+    ctx.handler.handleKey(createEvent("F").event)
+    expect(ctx.state.pending()).toBe("cF")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("Hello ld")
+    expect(ctx.textarea.cursorOffset).toBe(6)
+    expect(ctx.state.mode()).toBe("insert")
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("ct changes forward up to uppercase char", () => {
+    const ctx = createHandler("Hello World")
+    ctx.textarea.cursorOffset = 0
+
+    ctx.handler.handleKey(createEvent("c").event)
+    ctx.handler.handleKey(createEvent("t").event)
+    expect(ctx.state.pending()).toBe("ct")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("World")
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.mode()).toBe("insert")
+    expect(ctx.state.pending()).toBe("")
+  })
+
+  test("cT changes backward from after uppercase char", () => {
+    const ctx = createHandler("abcWdefgh")
+    ctx.textarea.cursorOffset = 6
+
+    ctx.handler.handleKey(createEvent("c").event)
+    ctx.handler.handleKey(createEvent("T").event)
+    expect(ctx.state.pending()).toBe("cT")
+
+    const w = createEvent("W")
+    expect(ctx.handler.handleKey(w.event)).toBe(true)
+    expect(w.prevented()).toBe(true)
+    expect(ctx.textarea.plainText).toBe("abcWgh")
+    expect(ctx.textarea.cursorOffset).toBe(4)
+    expect(ctx.state.mode()).toBe("insert")
+    expect(ctx.state.pending()).toBe("")
+  })
+
   test("yy yanks current line into register", () => {
     const ctx = createHandler("one\ntwo\nthree")
     ctx.textarea.cursorOffset = 5
