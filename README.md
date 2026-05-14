@@ -65,9 +65,9 @@ Toggle via command palette (`Ctrl+p` -> `Toggle vim mode`).
 
 `i` `I` `a` `A` `o` `O` `R` `r` `x` `~` `dd` `dw` `db` `dt` `dT` `df` `dF` `d%` `d}` `d{` `cc` `cw` `cb` `ct` `cT` `cf` `cF` `C` `c%` `c}` `c{` `S` `J`
 
-**yank / put / undo**
+**yank / put / undo / repeat**
 
-`yy` `yw` `y%` `y}` `y{` `p` `P` `u` `ctrl+r`
+`yy` `yw` `y%` `y}` `y{` `p` `P` `u` `ctrl+r` `.`
 
 - Copy the current prompt selection with `<leader>y` (default: `ctrl+x` then `y`).
 - Configure it with `keybinds.prompt_copy_selection`.
@@ -194,3 +194,8 @@ With this enabled, yank operations sync to the system clipboard and `p` / `P` pa
 ## Feedback
 
 Have a suggestion? [Open an issue](https://github.com/leohenon/opencode-vim/issues).
+
+## Contributors
+
+<a href="https://github.com/reobin"><img src="https://github.com/reobin.png" width="40" height="40" /></a> <a href="https://github.com/BrettKulp"><img src="https://github.com/BrettKulp.png" width="40" height="40" /></a> <a href="https://github.com/lamiphil"><img src="https://github.com/lamiphil.png" width="40" height="40" /></a>
+
