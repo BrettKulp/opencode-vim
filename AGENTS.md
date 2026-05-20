@@ -1,4 +1,5 @@
 - To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
+- To regenerate the GitHub Pages site from README.md, run `bun run build:site`.
 - ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
 - The default branch in this repo is `dev`.
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
