@@ -608,7 +608,11 @@ export function Prompt(props: PromptProps) {
   async function syncVimRegisterFromClipboard() {
     if (!useSystemClipboardRegister()) return
     const content = await Clipboard.read().catch(() => undefined)
-    if (content?.mime !== "text/plain" || !content.data) return
+    if (!content) return
+    if (content.mime !== "text/plain" || !content.data) {
+      clipboardRegister = null
+      return
+    }
     clipboardRegister = {
       text: content.data,
       linewise: clipboardRegister?.text === content.data ? clipboardRegister.linewise : false,
