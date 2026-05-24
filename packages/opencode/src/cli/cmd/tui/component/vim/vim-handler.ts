@@ -58,6 +58,7 @@ import {
   substituteLine,
   substituteLineEnd,
   syncSelection,
+  toggleVisualEnd,
   toggleCase,
   toggleSelectionCase,
   wordEnd,
@@ -663,7 +664,20 @@ export function createVimHandler(input: {
         return true
       }
 
-      if ((key === "i" || key === "a" || key === "o") && !event.shift && !hasModifier(event)) {
+      if ((key === "i" || key === "a") && !event.shift && !hasModifier(event)) {
+        event.preventDefault()
+        return true
+      }
+
+      if (key === "o" && !event.shift && !hasModifier(event)) {
+        const cursor = input.textarea().cursorOffset
+        const anchor = input.state.anchor()
+
+        if (anchor !== null) {
+            input.textarea().cursorOffset = anchor
+            input.state.setAnchor(cursor)
+          toggleVisualEnd(input.textarea(), cursor, input.state.isVisualLine())
+        }
         event.preventDefault()
         return true
       }

@@ -1369,6 +1369,82 @@ describe("vim motion handler", () => {
     expect(ctx.state.register()?.linewise).toBe(true)
   })
 
+  test("o toggles cursor to other end of selection in visual mode", () => {
+    const ctx = createHandler("line one\nline two\nline three\nline four")
+    ctx.textarea.cursorOffset = 0
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(ctx.textarea.plainText, 2, 0))
+    expect(ctx.state.anchor()).toBe(0)
+    expect((ctx.textarea as any).editorView.getSelection()).toEqual({ start: 0, end: rowColToOffset(ctx.textarea.plainText, 2, 0) + 1 })
+
+    ctx.handler.handleKey(createEvent("o").event)
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.anchor()).toBe(rowColToOffset(ctx.textarea.plainText, 2, 0))
+    expect((ctx.textarea as any).editorView.getSelection()).toEqual({ start: 0, end: rowColToOffset(ctx.textarea.plainText, 2, 0) + 1 })
+  })
+
+  test("o toggles cursor when cursor is above anchor", () => {
+    const ctx = createHandler("line one\nline two\nline three\nline four")
+    const bottom = rowColToOffset(ctx.textarea.plainText, 2, 0)
+    ctx.textarea.cursorOffset = bottom
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("k").event)
+    ctx.handler.handleKey(createEvent("k").event)
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.anchor()).toBe(bottom)
+
+    ctx.handler.handleKey(createEvent("o").event)
+    expect(ctx.textarea.cursorOffset).toBe(bottom)
+    expect(ctx.state.anchor()).toBe(0)
+  })
+
+  test("o in visual-line mode toggles to other end", () => {
+    const ctx = createHandler("line one\nline two\nline three\nline four")
+    ctx.textarea.cursorOffset = 0
+    ctx.handler.handleKey(createEvent("V").event)
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(ctx.textarea.plainText, 2, 0))
+    expect(ctx.state.anchor()).toBe(0)
+
+    ctx.handler.handleKey(createEvent("o").event)
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.anchor()).toBe(rowColToOffset(ctx.textarea.plainText, 2, 0))
+  })
+
+  test("o is a no-op when cursor equals anchor", () => {
+    const ctx = createHandler("line one\nline two")
+    ctx.textarea.cursorOffset = 5
+    ctx.handler.handleKey(createEvent("v").event)
+    expect(ctx.textarea.cursorOffset).toBe(5)
+    expect(ctx.state.anchor()).toBe(5)
+
+    ctx.handler.handleKey(createEvent("o").event)
+    expect(ctx.textarea.cursorOffset).toBe(5)
+    expect(ctx.state.anchor()).toBe(5)
+  })
+
+  test("after o toggle, movement extends from new cursor position", () => {
+    const ctx = createHandler("line one\nline two\nline three\nline four")
+    ctx.textarea.cursorOffset = 0
+    ctx.handler.handleKey(createEvent("v").event)
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("j").event)
+    ctx.handler.handleKey(createEvent("o").event)
+    expect(ctx.textarea.cursorOffset).toBe(0)
+    expect(ctx.state.anchor()).toBe(rowColToOffset(ctx.textarea.plainText, 2, 0))
+
+    ctx.handler.handleKey(createEvent("j").event)
+    expect(ctx.textarea.cursorOffset).toBe(rowColToOffset(ctx.textarea.plainText, 1, 0))
+    expect(ctx.state.anchor()).toBe(rowColToOffset(ctx.textarea.plainText, 2, 0))
+    expect((ctx.textarea as any).editorView.getSelection()).toEqual({
+      start: rowColToOffset(ctx.textarea.plainText, 1, 0),
+      end: rowColToOffset(ctx.textarea.plainText, 2, 0) + 1,
+    })
+  })
+
   test("supports insert transitions for A I O", () => {
     const i0 = createHandler("abc")
     i0.textarea.cursorOffset = 1
