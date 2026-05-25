@@ -129,6 +129,7 @@ export function createVimHandler(input: {
   copyYank?: () => void
   copyYankLine?: () => void
   copyYankMatchingBracket?: () => boolean
+  copyToggleVisualEnd?: () => void
   copyCopy?: () => void
   copyIsVisual?: () => boolean
   copyJump?: (action: VimJump) => void
@@ -1444,6 +1445,16 @@ export function createVimHandler(input: {
     if (key === "v" && !event.shift) {
       clearCopyPending()
       input.copyVisual?.("char")
+      event.preventDefault()
+      return true
+    }
+
+    if (key === "o" && !hasModifier(event) && input.copyIsVisual?.()) {
+      if (input.copyIsVisual?.()) {
+        input.copyToggleVisualEnd?.()
+        event.preventDefault()
+        return true
+      }
       event.preventDefault()
       return true
     }

@@ -8385,6 +8385,80 @@ describe("copy mode", () => {
     expect(ctx.state.pending()).toBe("")
     expect(ctx.state.mode()).toBe("copy")
   })
+
+  test("copyToggleVisualEnd swaps anchor and cursor in copy mode", () => {
+    const min = 7  // row.col (3) + gutter (4)
+    createRoot((dispose) => {
+      const cm = createRenderedCopyMode(["alpha", "beta", "gamma"])
+      cm.prompt.visual("char")
+      cm.prompt.move("down")
+      cm.prompt.move("right")
+      cm.prompt.move("right")
+
+      const before = cm.state()
+      expect(before.visual).toBe("char")
+      expect(before.anchor).toEqual({ idx: 0, col: min })
+      expect(before.idx).toBe(1)
+      expect(before.col).toBe(min + 2)
+
+      cm.prompt.copyToggleVisualEnd()
+
+      const after = cm.state()
+      expect(after.visual).toBe("char")
+      expect(after.active).toBe(true)
+      expect(after.anchor).toEqual({ idx: 1, col: min + 2 })
+      expect(after.idx).toBe(0)
+      expect(after.col).toBe(min)
+
+      dispose()
+    })
+  })
+
+  test("copyToggleVisualEnd preserves visual line mode", () => {
+    const min = 7
+    createRoot((dispose) => {
+      const cm = createRenderedCopyMode(["alpha", "beta", "gamma"])
+      cm.prompt.visual("line")
+      cm.prompt.move("down")
+      cm.prompt.move("down")
+
+      const before = cm.state()
+      expect(before.visual).toBe("line")
+      expect(before.anchor).toEqual({ idx: 0, col: min })
+      expect(before.idx).toBe(2)
+
+      cm.prompt.copyToggleVisualEnd()
+
+      const after = cm.state()
+      expect(after.visual).toBe("line")
+      expect(after.active).toBe(true)
+      expect(after.anchor).toEqual({ idx: 2, col: min })
+      expect(after.idx).toBe(0)
+      expect(after.col).toBe(min)
+
+      dispose()
+    })
+  })
+
+  test("copyToggleVisualEnd does nothing when no anchor", () => {
+    createRoot((dispose) => {
+      const cm = createRenderedCopyMode(["alpha", "beta"])
+      cm.prompt.jump("top")
+
+      const before = cm.state()
+      expect(before.anchor).toBeUndefined()
+      expect(before.idx).toBe(0)
+
+      cm.prompt.copyToggleVisualEnd()
+
+      const after = cm.state()
+      expect(after.idx).toBe(0)
+      expect(after.anchor).toBeUndefined()
+      expect(after.active).toBe(true)
+
+      dispose()
+    })
+  })
 })
 
 describe("copy mode cursor state", () => {
