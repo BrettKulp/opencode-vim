@@ -148,9 +148,6 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
           if (text) {
             setClearedText({ tab: store.tab, text })
           }
-          const inputs = [...store.custom]
-          inputs[store.tab] = ""
-          setStore("custom", inputs)
           setStore("editing", false)
         },
       },
