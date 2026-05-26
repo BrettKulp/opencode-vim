@@ -1449,7 +1449,7 @@ export function createVimHandler(input: {
       return true
     }
 
-    if (key === "o" && !hasModifier(event) && input.copyIsVisual?.()) {
+    if (key === "o" && !hasModifier(event) && input.copyIsVisual?.() && !isShifted(event, "o")) {
       if (input.copyIsVisual?.()) {
         input.copyToggleVisualEnd?.()
         event.preventDefault()

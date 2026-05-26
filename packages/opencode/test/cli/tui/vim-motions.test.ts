@@ -8459,6 +8459,38 @@ describe("copy mode", () => {
       dispose()
     })
   })
+
+  test("copyToggleVisualEnd updates stick so vertical movement uses new cursor column", () => {
+    const min = 7  // row.col (3) + gutter (4)
+    createRoot((dispose) => {
+      const cm = createRenderedCopyMode(["alpha", "beta", "gamma"])
+      cm.prompt.visual("char")
+      cm.prompt.move("down")
+      cm.prompt.move("right")
+
+      const before = cm.state()
+      expect(before.idx).toBe(1)
+      expect(before.col).toBe(min + 1)
+      expect(before.stick).toBe(1)
+
+      cm.prompt.copyToggleVisualEnd()
+
+      const afterToggle = cm.state()
+      expect(afterToggle.idx).toBe(0)
+      expect(afterToggle.col).toBe(min)
+      expect(afterToggle.stick).toBe(0)
+
+      cm.prompt.move("down")
+
+      const afterMove = cm.state()
+      expect(afterMove.idx).toBe(1)
+      // should use updated stick (0) not old stick (1),
+      // so column should be min (7) not min + 1 (8)
+      expect(afterMove.col).toBe(min)
+
+      dispose()
+    })
+  })
 })
 
 describe("copy mode cursor state", () => {
