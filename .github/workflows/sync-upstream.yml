@@ -1,8 +1,4 @@
 name: Sync with upstream
-
-on:
-  schworkflow_dispatch:
-
 permissions:
   contents: read
   issues: write
