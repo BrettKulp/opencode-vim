@@ -1,9 +1,7 @@
 name: Sync with upstream
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
+  schworkflow_dispatch:
 
 permissions:
   contents: read
